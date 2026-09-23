@@ -447,9 +447,14 @@ class WhatsAppManager {
           if (clean.length < 8) {
             throw new Error(`Número de telefone muito curto ou inválido: ${contact.phone}`);
           }
-          whatsappChatId = contact.phone.includes('@') ? contact.phone : `${clean}@c.us`;
+          whatsappChatId = contact.whatsapp_id || (contact.phone.includes('@') ? contact.phone : `${clean}@c.us`);
         } else {
           const rawId = String(idOrPhone).trim();
+          // Se o identificador começa com "cnt_", é um ID de contato que não foi encontrado no banco
+          if (rawId.startsWith('cnt_')) {
+            throw new Error(`Contato não encontrado no sistema (${rawId}). Por favor, atualize a lista de contatos.`);
+          }
+
           const clean = rawId.replace(/\D/g, '');
           if (clean.length < 8) {
             throw new Error(`Número de telefone muito curto ou inválido: ${rawId}`);
@@ -467,10 +472,61 @@ class WhatsAppManager {
           });
         }
 
+        // Tentar resolver o número real e LID via WhatsApp Web
+        const cleanDigits = targetPhone.replace(/\D/g, '');
+        if (cleanDigits.length >= 8 && (!whatsappChatId || whatsappChatId.endsWith('@c.us'))) {
+          try {
+            let numberId = await this.client.getNumberId(cleanDigits);
+            // Se não encontrou e for número do Brasil (55), tentar com ou sem o 9º dígito
+            if (!numberId && cleanDigits.startsWith('55')) {
+              if (cleanDigits.length === 13 && cleanDigits[4] === '9') {
+                const alt = cleanDigits.slice(0, 4) + cleanDigits.slice(5);
+                numberId = await this.client.getNumberId(alt);
+              } else if (cleanDigits.length === 12) {
+                const alt = cleanDigits.slice(0, 4) + '9' + cleanDigits.slice(4);
+                numberId = await this.client.getNumberId(alt);
+              }
+            }
+
+            if (numberId && numberId._serialized) {
+              whatsappChatId = numberId._serialized;
+              if (contact) {
+                contact.whatsapp_id = whatsappChatId;
+                db.saveContact(contact);
+              }
+            }
+          } catch (numErr) {
+            console.warn('[WhatsApp-Web.js] Aviso ao verificar getNumberId:', numErr);
+          }
+        }
+
         console.log(`[WhatsApp-Web.js] Enviando mensagem para ${whatsappChatId} (${targetName}): "${cleanText}"`);
 
-        // Envio real via whatsapp-web.js
-        const sent = await this.client.sendMessage(whatsappChatId, cleanText);
+        // Envio real via whatsapp-web.js com tratamento de LID
+        let sent: any;
+        try {
+          sent = await this.client.sendMessage(whatsappChatId, cleanText);
+        } catch (sendErr: any) {
+          const errStr = String(sendErr?.message || sendErr || '');
+          if (errStr.includes('No LID for user')) {
+            console.warn(`[WhatsApp-Web.js] 'No LID for user' detectado para ${whatsappChatId}. Tentando alternativa de chat...`);
+            // Se for número do Brasil e falhou com 13 dígitos, tenta sem o nono dígito
+            if (cleanDigits.startsWith('55') && cleanDigits.length === 13 && cleanDigits[4] === '9') {
+              const altChatId = `${cleanDigits.slice(0, 4)}${cleanDigits.slice(5)}@c.us`;
+              try {
+                sent = await this.client.sendMessage(altChatId, cleanText);
+                whatsappChatId = altChatId;
+              } catch (altErr) {
+                throw new Error(`O número ${targetPhone} não possui uma conta ativa no WhatsApp ou não pôde ser localizado.`);
+              }
+            } else {
+              throw new Error(`O número ${targetPhone} não possui uma conta ativa no WhatsApp ou não pôde ser localizado.`);
+            }
+          } else {
+            throw sendErr;
+          }
+        }
+
         const waMsgId = sent?.id?._serialized || `msg_${Date.now()}`;
         console.log(`[WhatsApp-Web.js] Mensagem enviada com sucesso para ${whatsappChatId}. ID:`, waMsgId);
 
@@ -520,8 +576,12 @@ class WhatsAppManager {
         }
       } catch (err: any) {
         console.error(`[WhatsApp-Web.js] Falha ao enviar para ${idOrPhone}:`, err);
-        const errMsg = err.message || 'Erro no envio';
-        errors.push(`${idOrPhone}: ${errMsg}`);
+        let rawErrMsg = err?.message || 'Erro no envio';
+        // Limpar mensagens de stack trace do WhatsApp Web
+        if (rawErrMsg.includes('https://') || rawErrMsg.includes('No LID for user')) {
+          rawErrMsg = `Não foi possível localizar o contato no WhatsApp (${idOrPhone}). Verifique se o número possui WhatsApp ativo.`;
+        }
+        errors.push(`${idOrPhone}: ${rawErrMsg}`);
 
         // Registrar falha no histórico
         db.addHistory({
@@ -531,7 +591,7 @@ class WhatsAppManager {
           direction: 'outgoing',
           mode: 'manual',
           status: 'failed',
-          error: errMsg,
+          error: rawErrMsg,
         });
 
         db.addLog({
@@ -539,8 +599,8 @@ class WhatsAppManager {
           result: 'error',
           contact_name: String(idOrPhone),
           outgoing_message: cleanText,
-          error: errMsg,
-          details: `Erro ao enviar para ${idOrPhone}: ${errMsg}`,
+          error: rawErrMsg,
+          details: `Erro ao enviar para ${idOrPhone}: ${rawErrMsg}`,
         });
       }
     }

@@ -234,9 +234,20 @@ async function startServer() {
       const result = await whatsappManager.sendManualMessage(uniqueTargets, cleanMessage);
       console.log('[API Response] POST /api/messages/send - Resultado:', JSON.stringify(result));
 
+      if (result.sentCount === 0) {
+        return res.status(400).json({
+          success: false,
+          error: (result.errors && result.errors[0]) || 'Não foi possível enviar a mensagem. Verifique a conexão do WhatsApp e tente novamente.',
+          sentCount: 0,
+          errors: result.errors,
+        });
+      }
+
       return res.status(200).json({
         success: true,
-        message: 'Mensagem enviada com sucesso',
+        message: result.errors && result.errors.length > 0
+          ? `${result.sentCount} mensagem(ns) enviada(s) com sucesso. ${result.errors.length} erro(s).`
+          : 'Mensagem enviada com sucesso',
         sentCount: result.sentCount,
         errors: result.errors,
       });

@@ -85,6 +85,7 @@ class Database {
 
   constructor() {
     this.data = this.loadData();
+    this.persist();
   }
 
   private loadData(): DatabaseData {
@@ -123,7 +124,7 @@ class Database {
     return JSON.parse(JSON.stringify(INITIAL_DATA));
   }
 
-  private persist(): void {
+  public persist(): void {
     try {
       if (!fs.existsSync(DATA_DIR)) {
         fs.mkdirSync(DATA_DIR, { recursive: true });

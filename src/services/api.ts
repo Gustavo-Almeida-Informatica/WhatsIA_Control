@@ -28,6 +28,11 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
     throw new Error('Não foi possível conectar ao servidor. Verifique a conexão do WhatsApp e tente novamente.');
   }
 
+  const isMessageEndpoint = url.includes('/messages') || url.includes('/conversations');
+  const defaultError = isMessageEndpoint
+    ? 'Não foi possível enviar a mensagem. Verifique a conexão do WhatsApp e tente novamente.'
+    : 'Não foi possível comunicar com o servidor. Verifique a conexão e tente novamente.';
+
   const contentType = res.headers.get('content-type') || '';
   const text = await res.text();
 
@@ -41,18 +46,15 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
       data = JSON.parse(text);
     } catch (parseErr) {
       console.error(`[API JSON Error] Falha de parse para ${url}:`, text.slice(0, 200));
-      throw new Error('Não foi possível enviar a mensagem. Verifique a conexão do WhatsApp e tente novamente.');
+      throw new Error(defaultError);
     }
   } else {
     console.warn(`[API Non-JSON Response] URL: ${url}, Status: ${res.status}, Type: ${contentType}`);
-    throw new Error('Não foi possível enviar a mensagem. Verifique a conexão do WhatsApp e tente novamente.');
+    throw new Error(defaultError);
   }
 
   if (!res.ok) {
-    const errorMsg =
-      data?.error ||
-      data?.message ||
-      'Não foi possível enviar a mensagem. Verifique a conexão do WhatsApp e tente novamente.';
+    const errorMsg = data?.error || data?.message || defaultError;
     throw new Error(errorMsg);
   }
 

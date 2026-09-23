@@ -1,0 +1,65 @@
+{
+  "user": {
+    "id": "usr_main_01",
+    "name": "Meu Usuário",
+    "email": "gustavoalmeidainformatica2025@gmail.com",
+    "created_at": "2026-09-23T16:42:23.002Z"
+  },
+  "connection": {
+    "status": "disconnected",
+    "status_label": "Desconectado",
+    "qr_code": null,
+    "phone_number": "",
+    "display_name": "",
+    "platform": "WhatsApp Web (whatsapp-web.js)",
+    "is_official": false,
+    "error_message": null,
+    "last_verified_at": ""
+  },
+  "automation_paused": false,
+  "automation_mode": "manual",
+  "ai_settings": {
+    "id": "ai_conf_01",
+    "user_id": "usr_main_01",
+    "assistant_name": "Assistente Pessoal",
+    "personality": "Educado e conciso",
+    "instructions": "Responda com clareza e de forma breve.",
+    "objective": "Auxiliar apenas quando expressamente autorizado pelo usuário.",
+    "enabled": false,
+    "fallback_enabled": false,
+    "temperature": 0.5,
+    "max_response_length": 250,
+    "context_messages_count": 5,
+    "allowed_contacts": [],
+    "blocked_contacts": [],
+    "model_name": "gemini-2.5-flash",
+    "created_at": "2026-09-23T16:42:23.002Z",
+    "updated_at": "2026-09-23T16:42:23.002Z"
+  },
+  "canned_responses": [],
+  "rules": [],
+  "contacts": [
+    {
+      "id": "cnt_1790181755044_htzmq",
+      "user_id": "usr_main_01",
+      "whatsapp_id": "5511999998888@c.us",
+      "name": "Contato Teste",
+      "phone": "+5511999998888",
+      "type": "individual",
+      "blocked": false,
+      "auto_reply_disabled": false,
+      "automation_enabled": true,
+      "mode": "manual",
+      "auto_reply_message": "",
+      "allow_ai": false,
+      "tags": [],
+      "unread_count": 0,
+      "created_at": "2026-09-23T16:42:35.044Z",
+      "updated_at": "2026-09-23T16:42:35.044Z"
+    }
+  ],
+  "conversations": [],
+  "messages": [],
+  "logs": [],
+  "history": []
+}
