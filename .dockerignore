@@ -1,0 +1,10 @@
+node_modules
+.git
+.env
+.env.*
+.wwebjs_auth
+.wwebjs_cache
+data/*.json
+build
+dist
+*.log

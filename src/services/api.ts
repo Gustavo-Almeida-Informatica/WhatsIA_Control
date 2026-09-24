@@ -2,6 +2,7 @@ import {
   User,
   WhatsAppConnection,
   Contact,
+  GroupChat,
   Conversation,
   Message,
   Rule,
@@ -10,6 +11,7 @@ import {
   CannedResponse,
   SystemStats,
   HistoryRecord,
+  ManualFlow,
 } from '../types';
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
@@ -94,20 +96,39 @@ export const api = {
       method: 'POST',
     }),
   syncContacts: () =>
-    request<{ success: boolean; count: number; contacts: Contact[] }>('/api/whatsapp/sync-contacts', {
+    request<{ success: boolean; count: number; groupsCount?: number; contacts: Contact[] }>('/api/whatsapp/sync-contacts', {
       method: 'POST',
     }),
+  getGroups: () => request<GroupChat[]>('/api/groups'),
 
-  // Emergency Pause & Mode
+  // Emergency Pause & Mode (Apenas Manual)
   toggleEmergencyPause: (paused?: boolean) =>
     request<{ automation_paused: boolean }>('/api/automation/pause', {
       method: 'POST',
       body: JSON.stringify({ paused }),
     }),
-  setAutomationMode: (mode: 'automatic' | 'manual') =>
-    request<{ automation_mode: 'automatic' | 'manual' }>('/api/automation/mode', {
+  setAutomationMode: (mode?: 'manual') =>
+    request<{ automation_mode: 'manual' }>('/api/automation/mode', {
       method: 'POST',
-      body: JSON.stringify({ mode }),
+      body: JSON.stringify({ mode: 'manual' }),
+    }),
+
+  // Visual Flows (Modo Manual com Diagrama Visual)
+  getManualFlow: () => request<ManualFlow>('/api/flows/active'),
+  getFlows: () => request<{ active: ManualFlow; flows: ManualFlow[] }>('/api/flows'),
+  saveManualFlow: (flow: Partial<ManualFlow>) =>
+    request<{ success: boolean; message: string; flow: ManualFlow }>('/api/flows', {
+      method: 'POST',
+      body: JSON.stringify(flow),
+    }),
+  deleteFlow: (id: string) =>
+    request<{ success: boolean; message: string }>(`/api/flows/${id}`, {
+      method: 'DELETE',
+    }),
+  sendFlowNode: (data: { contact_id?: string; phone?: string; message: string }) =>
+    request<{ success: boolean; message: string; result: any }>('/api/flows/send-node', {
+      method: 'POST',
+      body: JSON.stringify(data),
     }),
 
   // Contacts
@@ -123,7 +144,7 @@ export const api = {
     }),
   updateContactSettings: (data: {
     contact_id: string;
-    mode?: 'manual' | 'automatic';
+    mode?: 'manual';
     automation_enabled?: boolean;
     allow_ai?: boolean;
     auto_reply_message?: string;
@@ -169,13 +190,6 @@ export const api = {
   testRuleEvaluation: (arg1: any, arg2?: string) => {
     const payload = typeof arg1 === 'object' ? arg1 : { contact_id: arg1, message: arg2 || '' };
     return request<any>('/api/rules/test-evaluation', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    });
-  },
-  simulateIncomingMessage: (arg1: any, arg2?: string) => {
-    const payload = typeof arg1 === 'object' ? arg1 : { contact_id: arg1, message: arg2 || '' };
-    return request<any>('/api/simulation/incoming', {
       method: 'POST',
       body: JSON.stringify(payload),
     });

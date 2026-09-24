@@ -20,12 +20,13 @@ import { SystemStats } from '../types';
 export type ActiveTab =
   | 'dashboard'
   | 'messages'
+  | 'conversations'
   | 'contacts'
+  | 'groups'
   | 'automation'
   | 'history'
   | 'connection'
   | 'settings'
-  | 'conversations'
   | 'rules'
   | 'canned_responses';
 
@@ -38,7 +39,6 @@ export interface SidebarProps {
   stats: SystemStats | null;
   connection?: any;
   onOpenRuleTester?: () => void;
-  onOpenSimulator?: () => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -48,13 +48,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
   stats,
   connection,
   onOpenRuleTester,
-  onOpenSimulator,
 }) => {
   const handleTabChange = onSelectTab || setActiveTab || (() => {});
   const menuItems = [
     { id: 'dashboard', label: 'Início', icon: LayoutDashboard },
     { id: 'messages', label: 'Mensagens', icon: MessageSquare, highlight: true },
+    { id: 'conversations', label: 'Conversas', icon: FileText, badge: stats?.total_conversations },
     { id: 'contacts', label: 'Contatos', icon: Users, badge: stats?.total_contacts },
+    { id: 'groups', label: 'Grupos', icon: UsersRound, badge: stats?.total_groups },
     { id: 'automation', label: 'Automação', icon: Cpu },
     { id: 'history', label: 'Histórico', icon: History },
     { id: 'connection', label: 'WhatsApp', icon: Radio },
@@ -88,7 +89,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           ) : (
             <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-950/80 text-emerald-400 border border-emerald-800/60">
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-              ATIVO ({stats?.automation_mode === 'automatic' ? 'Auto' : 'Manual'})
+              ATIVO (Modo Manual)
             </span>
           )}
         </div>
@@ -138,7 +139,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       {/* Quick Testing Tools Buttons */}
       <div id="sidebar-tools" className="p-3 border-t border-slate-800/80 space-y-2 bg-slate-950/80">
         <div className="text-[11px] font-semibold tracking-wider text-slate-400 uppercase px-1">
-          Ferramentas de Teste
+          Ferramentas
         </div>
         <button
           id="btn-sidebar-rule-tester"
@@ -148,21 +149,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <FlaskConical className="w-4 h-4 text-indigo-400" />
           <span>Testador de Regras</span>
         </button>
-        <button
-          id="btn-sidebar-simulator"
-          onClick={onOpenSimulator}
-          className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium bg-slate-900 hover:bg-slate-800 text-teal-300 border border-teal-900/40 transition-colors"
-        >
-          <PlayCircle className="w-4 h-4 text-teal-400" />
-          <span>Simulador Interativo</span>
-        </button>
       </div>
 
       {/* Footer Info */}
       <div id="sidebar-footer" className="p-3 border-t border-slate-900 text-xs text-slate-400 flex items-center justify-between">
         <div>
           <p className="font-medium text-slate-300">WhatsApp IA Control</p>
-          <p className="text-[11px]">v2.1.0 • Oficial Cloud API</p>
+          <p className="text-[11px]">WhatsApp Web Control</p>
         </div>
         <span className="w-2.5 h-2.5 rounded-full bg-emerald-500" title="Sistema online"></span>
       </div>

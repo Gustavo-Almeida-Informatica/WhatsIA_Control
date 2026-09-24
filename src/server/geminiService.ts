@@ -21,10 +21,10 @@ export async function generateChatbotReply(params: {
   const { contact, incomingText, conversationMessages = [], customInstructions } = params;
   const aiSettings = db.getAISettings();
 
-  // If Gemini API key is missing, provide a safe fallback response
+  // If Gemini API key is missing, do not invent a fake response
   if (!process.env.GEMINI_API_KEY) {
-    console.warn('GEMINI_API_KEY is not set in environment. Returning fallback response.');
-    return `Olá ${contact.name}! Recebi sua mensagem: "${incomingText}". Nosso assistente IA está em modo de testes (chave de API não detectada no ambiente).`;
+    console.warn('[Gemini] GEMINI_API_KEY não está configurada no ambiente. Nenhuma resposta gerada.');
+    throw new Error('GEMINI_API_KEY não configurada.');
   }
 
   try {
@@ -83,11 +83,11 @@ Gere a resposta que o assistente deve enviar diretamente ao cliente pelo WhatsAp
 
     const reply = response.text?.trim();
     if (!reply) {
-      return `Olá ${contact.name}! Recebi sua mensagem e logo daremos retorno.`;
+      throw new Error('Modelo de IA não retornou texto.');
     }
     return reply;
   } catch (error: any) {
-    console.error('Error generating AI reply with Gemini:', error);
-    return `Olá ${contact.name}! Agradecemos o contato. No momento nosso atendente automatizado teve uma instabilidade temporária. Nossa equipe entrará em contato em breve.`;
+    console.error('[Gemini] Erro ao gerar resposta de IA:', error?.message || error);
+    throw error;
   }
 }

@@ -9,7 +9,7 @@ import {
   Conversation
 } from '../types';
 import { generateChatbotReply } from './geminiService';
-import { sendWhatsAppCloudMessage } from './whatsappService';
+import { sendWhatsAppMessage } from './whatsappService';
 
 export function normalizeText(text: string): string {
   return text
@@ -351,178 +351,109 @@ export async function processIncomingMessage(params: {
     return { actionTaken: 'Ignorado: Automação pausada por emergência', isAi: false };
   }
 
-  // 5. Check if contact is in MANUAL MODE (or global system mode is manual)
-  const isContactManual = (contact.mode || 'manual') === 'manual' || stats.automation_mode === 'manual';
+  // 5. Visual Flow configured response lookup
+  const manualFlow = db.getManualFlow();
+  const contactNodes = (manualFlow.nodes || []).filter((n) => n.type === 'contact');
+  const matchedContactNode = contactNodes.find((node) => {
+    if (node.data.contactId && node.data.contactId === contact.id) return true;
+    if (node.data.phone && contact.phone && contact.phone.replace(/\D/g, '').includes(node.data.phone.replace(/\D/g, ''))) return true;
+    if (node.data.contactName && normalizeText(node.data.contactName) === normalizeText(contact.name)) return true;
+    return false;
+  });
 
-  if (isContactManual) {
-    incomingMsg.manual_action_pending = true;
+  let configuredFlowReply = '';
+  if (matchedContactNode) {
+    const conn = (manualFlow.connections || []).find((c) => c.fromNodeId === matchedContactNode.id);
+    if (conn) {
+      const msgNode = (manualFlow.nodes || []).find((n) => n.id === conn.toNodeId && n.type === 'message');
+      if (msgNode && msgNode.data.text && msgNode.data.text.trim().length > 0) {
+        configuredFlowReply = msgNode.data.text.trim();
+      }
+    }
+  }
+
+  // 6. Contact is in MANUAL MODE (Modo Exclusivo nesta versão)
+  incomingMsg.manual_action_pending = true;
+
+  if (configuredFlowReply) {
+    incomingMsg.suggested_ai_reply = configuredFlowReply;
     db.addLog({
       user_id: contact.user_id,
       message_id: incomingMsg.id,
       contact_id: contact.id,
       contact_name: contact.name,
       contact_phone: contact.phone,
-      action: 'Modo manual: aguardando resposta humana',
+      action: 'Fluxo Manual: Resposta configurada aguardando confirmação',
       result: 'manual_pending',
-      details: `Mensagem recebida de ${contact.name}: "${incomingText}". Nenhuma resposta automática enviada (Modo Manual ativo).`,
+      details: `Fluxo visual configurado para ${contact.name}. Mensagem pronta: "${configuredFlowReply}".`,
       incoming_message: incomingText,
+      outgoing_message: configuredFlowReply,
       is_ai: false,
       is_demo: isDemo,
     });
 
     return {
-      actionTaken: 'Modo Manual: Aguardando resposta humana',
+      actionTaken: `Fluxo Manual: Resposta configurada para ${contact.name}`,
+      replySent: configuredFlowReply,
       isAi: false,
       manualPending: true,
     };
   }
 
-  // 6. Contact is in AUTOMATIC MODE
-  let finalReply = '';
-  let isAiReply = false;
-  let matchedRule: Rule | undefined;
-
-  // 6a. Priority A: Contact has specific auto_reply_message configured
-  if (contact.auto_reply_message && contact.auto_reply_message.trim().length > 0) {
-    finalReply = contact.auto_reply_message.trim();
-    isAiReply = false;
-  } else {
-    // 6b. Priority B: Rules evaluation
-    const evaluation = testRulesEvaluation(contact, incomingText);
-    matchedRule = evaluation.chosen_rule;
-
-    if (matchedRule) {
-      if (matchedRule.action_type === 'fixed_reply') {
-        finalReply = matchedRule.action_value;
-        isAiReply = false;
-      } else if (matchedRule.action_type === 'ai_reply') {
-        if (contact.allow_ai && db.getAISettings().enabled) {
-          finalReply = await generateChatbotReply({
-            contact,
-            incomingText,
-            conversationMessages: convMessages,
-          });
-          isAiReply = true;
-        } else {
-          db.addLog({
-            user_id: contact.user_id,
-            message_id: incomingMsg.id,
-            contact_id: contact.id,
-            contact_name: contact.name,
-            contact_phone: contact.phone,
-            action: 'Regra de IA bloqueada: IA desativada para este contato',
-            result: 'ignored_rule',
-            details: 'A regra acionou IA, porém o contato está configurado com Permitir IA = OFF.',
-            is_ai: false,
-            is_demo: isDemo,
-          });
-          return { actionTaken: 'IA não autorizada para este contato', isAi: false };
-        }
-      } else if (matchedRule.action_type === 'do_not_reply') {
-        db.addLog({
-          user_id: contact.user_id,
-          message_id: incomingMsg.id,
-          contact_id: contact.id,
-          contact_name: contact.name,
-          contact_phone: contact.phone,
-          rule_id: matchedRule.id,
-          rule_name: matchedRule.name,
-          action: `Regra "${matchedRule.name}" executou ação: Não responder`,
-          result: 'ignored_rule',
-          details: 'Ação configurada para não responder.',
-          is_ai: false,
-          is_demo: isDemo,
-        });
-        return { actionTaken: `Regra executada: Não responder (${matchedRule.name})`, ruleUsed: matchedRule, isAi: false };
-      }
-    } else {
-      // 6c. Priority C: AI Fallback ONLY if explicitly enabled on contact AND global settings
-      const aiSettings = db.getAISettings();
-      if (contact.allow_ai && aiSettings.enabled && aiSettings.fallback_enabled) {
-        finalReply = await generateChatbotReply({
-          contact,
-          incomingText,
-          conversationMessages: convMessages,
-        });
-        isAiReply = true;
-      } else {
-        db.addLog({
-          user_id: contact.user_id,
-          message_id: incomingMsg.id,
-          contact_id: contact.id,
-          contact_name: contact.name,
-          contact_phone: contact.phone,
-          action: 'Nenhuma resposta automática configurada',
-          result: 'ignored_rule',
-          details: `Mensagem "${incomingText}" recebida. Nenhuma resposta automática personalizada ou regra correspondente.`,
-          incoming_message: incomingText,
-          is_ai: false,
-          is_demo: isDemo,
-        });
-        incomingMsg.manual_action_pending = true;
-        return { actionTaken: 'Nenhuma resposta configurada - aguardando resposta manual', isAi: false, manualPending: true };
-      }
-    }
-  }
-
-  // 9. Deliver reply
-  if (finalReply) {
-    let deliveryStatus: Message['status'] = 'delivered';
-    let errorMessage = '';
-
-    // Check if real WhatsApp connection should be invoked
-    if (!isDemo && conn.status === 'connected') {
-      const sendResult = await sendWhatsAppCloudMessage({
-        recipientPhone: contact.phone,
-        text: finalReply,
+  // 7. Se não houver fluxo visual, verificar se o usuário autorizou IA especificamente para este contato
+  const aiSettings = db.getAISettings();
+  if (contact.allow_ai && aiSettings.enabled) {
+    try {
+      const aiReply = await generateChatbotReply({
+        contact,
+        incomingText,
+        conversationMessages: convMessages,
       });
-      if (!sendResult.success) {
-        deliveryStatus = 'failed';
-        errorMessage = sendResult.error || 'Erro na WhatsApp Cloud API';
-      }
+
+      incomingMsg.suggested_ai_reply = aiReply;
+      db.addLog({
+        user_id: contact.user_id,
+        message_id: incomingMsg.id,
+        contact_id: contact.id,
+        contact_name: contact.name,
+        contact_phone: contact.phone,
+        action: 'Sugestão de IA gerada (Modo Manual: requer aprovação)',
+        result: 'manual_pending',
+        details: `IA autorizada pelo usuário gerou sugestão: "${aiReply.slice(0, 100)}..."`,
+        incoming_message: incomingText,
+        is_ai: true,
+        is_demo: isDemo,
+      });
+
+      return {
+        actionTaken: 'IA: Sugestão aguardando aprovação manual',
+        replySent: aiReply,
+        isAi: true,
+        manualPending: true,
+      };
+    } catch (aiErr: any) {
+      console.warn('[RuleEngine] Falha ao gerar sugestão de IA:', aiErr.message);
     }
-
-    // Save bot message
-    const botMsg = db.addMessage({
-      conversation_id: conversation.id,
-      whatsapp_message_id: `wamid_bot_${Date.now()}`,
-      sender: 'bot',
-      message_type: 'text',
-      content: finalReply,
-      timestamp: new Date().toISOString(),
-      is_from_bot: true,
-      rule_id: matchedRule?.id,
-      rule_name: matchedRule?.name,
-      is_from_ai: isAiReply,
-      status: deliveryStatus,
-    });
-
-    // Record log
-    db.addLog({
-      user_id: contact.user_id,
-      message_id: botMsg.id,
-      contact_id: contact.id,
-      contact_name: contact.name,
-      contact_phone: contact.phone,
-      rule_id: matchedRule?.id,
-      rule_name: matchedRule?.name,
-      action: isAiReply ? 'Resposta gerada via IA' : `Resposta automática enviada (Regra: ${matchedRule?.name || 'Fixa'})`,
-      result: deliveryStatus === 'failed' ? 'error' : (isAiReply ? 'replied_ai' : 'replied_fixed'),
-      error: errorMessage,
-      details: deliveryStatus === 'failed'
-        ? `Falha ao enviar mensagem para ${contact.phone}: ${errorMessage}`
-        : `Resposta enviada com sucesso: "${finalReply.slice(0, 80)}${finalReply.length > 80 ? '...' : ''}"`,
-      is_ai: isAiReply,
-      is_demo: isDemo || conn.status !== 'connected',
-    });
-
-    return {
-      actionTaken: deliveryStatus === 'failed' ? 'Falha no envio da resposta' : 'Resposta enviada com sucesso',
-      replySent: finalReply,
-      ruleUsed: matchedRule,
-      isAi: isAiReply,
-    };
   }
 
-  return { actionTaken: 'Sem resposta', isAi: false };
+  // 8. Mensagem padrão em modo manual
+  db.addLog({
+    user_id: contact.user_id,
+    message_id: incomingMsg.id,
+    contact_id: contact.id,
+    contact_name: contact.name,
+    contact_phone: contact.phone,
+    action: 'Modo manual: aguardando resposta humana',
+    result: 'manual_pending',
+    details: `Mensagem recebida de ${contact.name}: "${incomingText}". Aguardando ação no painel.`,
+    incoming_message: incomingText,
+    is_ai: false,
+    is_demo: isDemo,
+  });
+
+  return {
+    actionTaken: 'Modo Manual: Aguardando resposta humana',
+    isAi: false,
+    manualPending: true,
+  };
 }

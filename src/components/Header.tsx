@@ -21,7 +21,6 @@ interface HeaderProps {
   onToggleMode: () => void;
   onRefresh?: () => void;
   onOpenRuleTester: () => void;
-  onOpenSimulator: () => void;
   loading?: boolean;
 }
 
@@ -32,11 +31,9 @@ export const Header: React.FC<HeaderProps> = ({
   onToggleMode,
   onRefresh,
   onOpenRuleTester,
-  onOpenSimulator,
   loading = false,
 }) => {
   const isPaused = stats?.automation_paused ?? false;
-  const isAutomatic = stats?.automation_mode === 'automatic';
   const isConnected = connection?.status === 'connected';
 
   return (
@@ -74,29 +71,14 @@ export const Header: React.FC<HeaderProps> = ({
 
       {/* Right: Mode Toggles & Action Controls */}
       <div id="header-actions-group" className="flex items-center gap-3">
-        {/* Automatic vs Manual Mode Switch */}
-        <button
-          id="btn-toggle-automation-mode"
-          onClick={onToggleMode}
-          title="Alternar entre envio imediato (Automático) ou aprovação prévia (Manual)"
-          className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-medium transition-all ${
-            isAutomatic
-              ? 'bg-slate-900 border-slate-700 text-slate-200 hover:border-emerald-600'
-              : 'bg-indigo-950/80 border-indigo-700/80 text-indigo-200 hover:bg-indigo-900'
-          }`}
+        {/* Modo Manual com Diagrama Visual Badge */}
+        <div
+          id="badge-mode-manual"
+          className="flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-medium bg-indigo-950/80 border-indigo-700/80 text-indigo-200"
         >
-          {isAutomatic ? (
-            <>
-              <Zap className="w-3.5 h-3.5 text-emerald-400" />
-              <span>Modo: <strong>Automático</strong></span>
-            </>
-          ) : (
-            <>
-              <ShieldCheck className="w-3.5 h-3.5 text-indigo-400" />
-              <span>Modo: <strong>Manual (Aprovação)</strong></span>
-            </>
-          )}
-        </button>
+          <ShieldCheck className="w-3.5 h-3.5 text-indigo-400" />
+          <span>Modo: <strong>Fluxo Manual</strong></span>
+        </div>
 
         {/* Test Rule Button */}
         <button
@@ -106,16 +88,6 @@ export const Header: React.FC<HeaderProps> = ({
         >
           <FlaskConical className="w-3.5 h-3.5 text-indigo-400" />
           <span>Testar Regra</span>
-        </button>
-
-        {/* Simulator Button */}
-        <button
-          id="btn-header-simulator"
-          onClick={onOpenSimulator}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-teal-950/60 hover:bg-teal-900/60 text-teal-300 border border-teal-800/80 text-xs font-medium transition-colors"
-        >
-          <Play className="w-3 h-3 text-teal-400 fill-teal-400" />
-          <span>Simulador</span>
         </button>
 
         {/* Emergency Pause / Resume Button */}

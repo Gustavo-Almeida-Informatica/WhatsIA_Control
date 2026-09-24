@@ -1,6 +1,7 @@
 import express from 'express';
 import http from 'http';
 import path from 'path';
+import fs from 'fs';
 import { Server as SocketIOServer } from 'socket.io';
 import { createServer as createViteServer } from 'vite';
 import dotenv from 'dotenv';
@@ -12,7 +13,7 @@ dotenv.config();
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 3000;
   const server = http.createServer(app);
 
   // Setup Socket.IO for real-time events (QR Code, status changes, incoming messages)
@@ -121,26 +122,65 @@ async function startServer() {
   app.post('/api/whatsapp/sync-contacts', async (req, res) => {
     try {
       const contacts = await whatsappManager.syncContacts();
-      res.json({ success: true, count: contacts.length, contacts });
+      const groups = db.getGroups();
+      res.json({
+        success: true,
+        count: contacts.length,
+        groupsCount: groups.length,
+        contacts,
+      });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err.message });
     }
   });
 
-  // GET /api/contacts
+  // GET /api/contacts (suporta busca, filtro por agenda e paginação sob demanda)
   app.get('/api/contacts', (req, res) => {
-    res.json(db.getContacts());
+    const search = req.query.search as string | undefined;
+    const onlySaved = req.query.only_saved === 'true';
+    const allMatching = db.getContacts({ search, onlySaved });
+
+    const pageStr = req.query.page as string | undefined;
+    const limitStr = req.query.limit as string | undefined;
+
+    if (pageStr && limitStr) {
+      const page = Math.max(1, parseInt(pageStr, 10) || 1);
+      const limit = Math.max(1, parseInt(limitStr, 10) || 25);
+      const total = allMatching.length;
+      const totalPages = Math.ceil(total / limit) || 1;
+      const offset = (page - 1) * limit;
+      const paginated = allMatching.slice(offset, offset + limit);
+
+      return res.json({
+        contacts: paginated,
+        total,
+        page,
+        limit,
+        totalPages,
+      });
+    }
+
+    // Compatibilidade com componentes que esperam Contact[] diretamente
+    res.json(allMatching);
+  });
+
+  // GET /api/groups (somente grupos reais)
+  app.get('/api/groups', (req, res) => {
+    res.json(db.getGroups());
   });
 
   // POST /api/contacts (criar ou atualizar contato)
   app.post('/api/contacts', (req, res) => {
-    const { name, phone, mode, auto_reply_message, allow_ai, automation_enabled } = req.body;
+    const { name, phone, mode, auto_reply_message, allow_ai, automation_enabled, whatsapp_id, type, is_my_contact } = req.body;
     if (!name || !phone) {
       return res.status(400).json({ error: 'Nome e telefone são obrigatórios.' });
     }
     const contact = db.saveContact({
       name: name.trim(),
       phone: phone.trim(),
+      whatsapp_id,
+      type,
+      is_my_contact: Boolean(is_my_contact),
       mode: mode || 'manual',
       auto_reply_message: auto_reply_message || '',
       allow_ai: Boolean(allow_ai),
@@ -392,7 +432,7 @@ async function startServer() {
           phone: phone || '+55 11 99999-9999',
           whatsapp_id: '5511999999999@c.us',
           type: 'individual',
-          mode: 'automatic',
+          mode: 'manual',
           automation_enabled: true,
           allow_ai: true,
           blocked: false,
@@ -402,36 +442,10 @@ async function startServer() {
           updated_at: new Date().toISOString(),
         };
       }
-      const evalResult = testRulesEvaluation(contact, String(message || ''));
+      const evalResult = testRulesEvaluation(contact!, String(message || ''));
       res.json(evalResult);
     } catch (err: any) {
       res.status(500).json({ success: false, error: err.message || 'Erro ao avaliar regras' });
-    }
-  });
-
-  // POST /api/simulation/incoming (simular recebimento de mensagem)
-  app.post('/api/simulation/incoming', async (req, res) => {
-    try {
-      const { contact_id, phone, message } = req.body;
-      let contact = contact_id ? db.getContactById(contact_id) : null;
-      if (!contact && phone) {
-        contact = db.getContactByPhone(phone);
-      }
-      if (!contact) {
-        contact = db.saveContact({
-          name: phone || 'Contato Simulação',
-          phone: phone || '+55 11 98888-8888',
-          mode: 'manual',
-        });
-      }
-      const processResult = await processIncomingMessage({
-        contact: contact!,
-        incomingText: String(message || ''),
-        isDemo: true,
-      });
-      res.json({ success: true, message: 'Mensagem simulada com sucesso', result: processResult });
-    } catch (err: any) {
-      res.status(500).json({ success: false, error: err.message || 'Erro na simulação' });
     }
   });
 
@@ -500,6 +514,68 @@ async function startServer() {
     return res.status(404).json({ success: false, error: 'Resposta rápida não encontrada.' });
   });
 
+  // FLOWS MANAGEMENT (MODO MANUAL COM DIAGRAMA VISUAL)
+  app.get('/api/flows', (req, res) => {
+    res.json({
+      active: db.getManualFlow(),
+      flows: db.getFlows(),
+    });
+  });
+
+  app.get('/api/flows/active', (req, res) => {
+    res.json(db.getManualFlow());
+  });
+
+  app.post('/api/flows', (req, res) => {
+    try {
+      const saved = db.saveManualFlow(req.body);
+      res.json({
+        success: true,
+        message: 'Fluxo visual salvo com sucesso.',
+        flow: saved,
+      });
+    } catch (err: any) {
+      res.status(400).json({ success: false, error: err.message || 'Erro ao salvar fluxo visual.' });
+    }
+  });
+
+  app.delete('/api/flows/:id', (req, res) => {
+    const success = db.deleteFlow(req.params.id);
+    res.json({ success, message: success ? 'Fluxo excluído com sucesso.' : 'Fluxo não encontrado.' });
+  });
+
+  // Disparo manual a partir de um bloco do fluxo
+  app.post('/api/flows/send-node', async (req, res) => {
+    const { contact_id, phone, message } = req.body;
+    const cleanMsg = String(message || '').trim();
+    if (!cleanMsg) {
+      return res.status(400).json({ success: false, error: 'O conteúdo da mensagem não pode estar vazio.' });
+    }
+
+    const target = phone || contact_id;
+    if (!target) {
+      return res.status(400).json({ success: false, error: 'Contato de destino não especificado no bloco.' });
+    }
+
+    if (!whatsappManager.isReady()) {
+      return res.status(400).json({
+        success: false,
+        error: 'WhatsApp não está conectado. Escaneie o QR Code e aguarde o status PRONTO antes de disparar.',
+      });
+    }
+
+    try {
+      const result = await whatsappManager.sendManualMessage([String(target)], cleanMsg);
+      res.json({
+        success: result.sentCount > 0,
+        message: `Mensagem disparada com sucesso para ${target}`,
+        result,
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message || 'Erro ao disparar mensagem do fluxo.' });
+    }
+  });
+
   // AI Settings
   app.get('/api/ai/settings', (req, res) => {
     res.json(db.getAISettings());
@@ -510,7 +586,7 @@ async function startServer() {
     res.json(updated);
   });
 
-  // Automation Pause & Mode
+  // Automation Pause & Mode (Apenas Manual nesta versão)
   app.post('/api/automation/pause', (req, res) => {
     const { paused } = req.body;
     const result = db.setAutomationPaused(Boolean(paused));
@@ -518,11 +594,7 @@ async function startServer() {
   });
 
   app.post('/api/automation/mode', (req, res) => {
-    const { mode } = req.body;
-    if (mode !== 'automatic' && mode !== 'manual') {
-      return res.status(400).json({ success: false, error: 'Modo inválido. Use "automatic" ou "manual".' });
-    }
-    const result = db.setAutomationMode(mode);
+    const result = db.setAutomationMode('manual');
     res.json({ automation_mode: result });
   });
 
@@ -559,12 +631,17 @@ async function startServer() {
   // --- VITE MIDDLEWARE (Apenas para rotas do Frontend, nunca /api/*) ---
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: false,
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(process.cwd(), 'dist');
+    const distPath = fs.existsSync(path.join(process.cwd(), 'dist'))
+      ? path.join(process.cwd(), 'dist')
+      : path.resolve(__dirname, '..', 'dist');
     app.use(express.static(distPath));
     app.get('*', (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));

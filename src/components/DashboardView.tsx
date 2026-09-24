@@ -217,16 +217,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <div className="text-2xl font-bold text-white font-mono">
             {stats?.messages_replied ?? 0}
           </div>
-          <p className="mt-2 text-xs text-slate-400">Enviadas manualmente ou auto</p>
+          <p className="mt-2 text-xs text-slate-400">Enviadas manualmente ou via fluxo</p>
         </div>
 
-        {/* 5. Automação: Ativada / Desativada */}
+        {/* 5. Sistema: Operacional / Pausado */}
         <div
           id="card-status-automation"
           className="bg-slate-900 border border-slate-800 rounded-2xl p-5 hover:border-slate-700 transition-colors"
         >
           <div className="flex items-center justify-between text-xs text-slate-400 mb-2">
-            <span>Automação</span>
+            <span>Sistema</span>
             <Cpu className="w-4 h-4 text-emerald-400" />
           </div>
           <div className="flex items-center gap-2">
@@ -236,11 +236,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               }`}
             />
             <span className="text-base font-bold text-white">
-              {!isPaused ? 'Ativada' : 'Desativada'}
+              {!isPaused ? 'Modo Manual' : 'Pausado'}
             </span>
           </div>
           <p className="mt-2 text-xs text-slate-400">
-            {!isPaused ? 'Respondendo contatos' : 'Pausada globalmente'}
+            {!isPaused ? 'Fluxos visuais ativos' : 'Pausado globalmente'}
           </p>
         </div>
       </div>

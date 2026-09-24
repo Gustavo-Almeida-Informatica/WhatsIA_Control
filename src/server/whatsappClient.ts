@@ -6,8 +6,14 @@ import { generateChatbotReply } from './geminiService';
 import { Server as SocketIOServer } from 'socket.io';
 import { Contact, ConnectionStatus } from '../types';
 
-const require = createRequire(import.meta.url);
-const { Client, LocalAuth } = require('whatsapp-web.js');
+const getWWebJS = () => {
+  if (typeof require !== 'undefined') {
+    return require('whatsapp-web.js');
+  }
+  const req = createRequire(typeof __filename !== 'undefined' ? __filename : path.join(process.cwd(), 'dummy.js'));
+  return req('whatsapp-web.js');
+};
+const { Client, LocalAuth } = getWWebJS();
 
 class WhatsAppManager {
   private client: any = null;
@@ -71,7 +77,11 @@ class WhatsAppManager {
     this.emitStatus('initializing', 'Inicializando...');
 
     try {
-      const sessionPath = path.join(process.cwd(), '.wwebjs_auth');
+      const sessionPath = process.env.WHATSAPP_SESSION_PATH
+        ? (path.isAbsolute(process.env.WHATSAPP_SESSION_PATH)
+            ? process.env.WHATSAPP_SESSION_PATH
+            : path.join(process.cwd(), process.env.WHATSAPP_SESSION_PATH))
+        : path.join(process.cwd(), '.wwebjs_auth');
 
       console.log('[WhatsApp] Criando nova instância do cliente com LocalAuth em:', sessionPath);
 
@@ -81,6 +91,7 @@ class WhatsAppManager {
         }),
         puppeteer: {
           headless: true,
+          executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
           args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
@@ -88,7 +99,6 @@ class WhatsAppManager {
             '--disable-accelerated-2d-canvas',
             '--no-first-run',
             '--no-zygote',
-            '--single-process',
             '--disable-gpu',
           ],
         },
@@ -359,6 +369,11 @@ class WhatsAppManager {
       // Caso 2: Se não tem mensagem automática, verificar se IA está autorizada para este contato
       const aiSettings = db.getAISettings();
       if (contact.allow_ai && aiSettings.enabled) {
+        if (!process.env.GEMINI_API_KEY) {
+          console.log(`[WhatsApp] GEMINI_API_KEY não configurada. Nenhuma resposta de IA será gerada para ${contact.name}.`);
+          return;
+        }
+
         console.log(`[WhatsApp] Gerando resposta com IA para contato autorizado ${contact.name}...`);
 
         try {
@@ -651,37 +666,125 @@ class WhatsAppManager {
     }
 
     try {
-      console.log('[WhatsApp] Sincronizando contatos da sessão real...');
-      const waContacts = await this.client.getContacts();
-      console.log(`[WhatsApp] Contatos retornados pela sessão: ${waContacts?.length || 0}`);
+      console.log('[WhatsApp] Sincronizando contatos e conversas reais da sessão...');
+      if (this.io) {
+        this.io.emit('whatsapp:contacts_syncing', {
+          status: 'started',
+          message: 'Obtendo conversas e contatos reais do WhatsApp...',
+        });
+      }
 
-      if (Array.isArray(waContacts)) {
-        for (const c of waContacts) {
-          // Filtra contatos do sistema (status@broadcast, etc)
-          if (!c.id || !c.id.user || c.id.user === 'status' || c.isEnterprise === false && !c.number) {
+      // 1. Buscar CHATS / CONVERSAS REAIS do WhatsApp (inclui grupos e conversas diretas, ~552)
+      let waChats: any[] = [];
+      try {
+        waChats = await this.client.getChats();
+        console.log(`[WhatsApp] Total bruto de conversas (chats) retornadas: ${waChats?.length || 0}`);
+      } catch (chatErr) {
+        console.warn('[WhatsApp] Erro ao obter chats:', chatErr);
+      }
+
+      const activeDirectChatIds = new Set<string>();
+
+      if (Array.isArray(waChats)) {
+        for (const chat of waChats) {
+          const chatId = chat.id?._serialized || '';
+          if (!chatId || chatId === 'status@broadcast' || chatId.endsWith('@broadcast') || chatId.endsWith('@newsletter')) {
             continue;
           }
 
-          const phoneNum = `+${c.number || c.id.user}`;
-          const displayName = c.name || c.pushname || c.shortName || phoneNum;
-
-          // Se já existe, preserva o modo e configurações do usuário
-          const existing = db.getContactByPhone(phoneNum);
-          if (!existing) {
-            db.saveContact({
-              name: displayName,
-              phone: phoneNum,
-              whatsapp_id: c.id._serialized,
-              type: c.isGroup ? 'group' : 'individual',
-              mode: 'manual', // Padrão: manual
-              automation_enabled: false,
-              allow_ai: false,
+          if (chat.isGroup || chatId.endsWith('@g.us')) {
+            // Salvar no repositório de GRUPOS (somente grupos reais)
+            db.saveGroup({
+              whatsapp_id: chatId,
+              name: chat.name || 'Grupo sem nome',
+              unread_count: chat.unreadCount || 0,
+              is_read_only: chat.isReadOnly || false,
+              last_message: chat.lastMessage?.body || '',
+              last_message_time: chat.timestamp ? new Date(chat.timestamp * 1000).toISOString() : undefined,
             });
+          } else {
+            activeDirectChatIds.add(chatId);
           }
         }
       }
+
+      // 2. Buscar CONTATOS REAIS
+      const waContacts = await this.client.getContacts();
+      console.log(`[WhatsApp] Total bruto retornado por getContacts(): ${waContacts?.length || 0}`);
+
+      if (Array.isArray(waContacts)) {
+        let savedCount = 0;
+        for (const c of waContacts) {
+          const serialized = c.id?._serialized || '';
+          const user = c.id?.user || '';
+
+          // Filtra IDs técnicos e broadcasts
+          if (
+            !serialized ||
+            !user ||
+            user === 'status' ||
+            serialized === 'status@broadcast' ||
+            serialized.endsWith('@broadcast') ||
+            serialized.endsWith('@newsletter') ||
+            serialized.endsWith('@lid') ||
+            user === 'server' ||
+            user === '0'
+          ) {
+            continue;
+          }
+
+          // Se for grupo, salvar como grupo e NUNCA como contato
+          if (c.isGroup || serialized.endsWith('@g.us')) {
+            db.saveGroup({
+              whatsapp_id: serialized,
+              name: c.name || c.pushname || 'Grupo WhatsApp',
+            });
+            continue;
+          }
+
+          // Somente contatos reais:
+          // c.isMyContact === true indica os contatos salvos no celular do usuário (~392).
+          // Membros desconhecidos de grupos têm c.isMyContact === false.
+          const isSavedInPhone = Boolean(c.isMyContact);
+          const hasDirectChat = activeDirectChatIds.has(serialized);
+
+          // Manter apenas se for contato salvo na agenda OU se possuir conversa direta 1:1
+          if (!isSavedInPhone && !hasDirectChat) {
+            continue;
+          }
+
+          const cleanNum = (c.number || user).replace(/\D/g, '');
+          if (cleanNum.length < 8) continue;
+
+          const phoneNum = `+${cleanNum}`;
+          const displayName = c.name || c.pushname || c.shortName || phoneNum;
+
+          db.saveContact({
+            name: displayName,
+            phone: phoneNum,
+            whatsapp_id: serialized,
+            type: 'individual',
+            is_my_contact: isSavedInPhone,
+            mode: 'manual',
+            automation_enabled: false,
+            allow_ai: false,
+          });
+
+          savedCount++;
+        }
+        console.log(`[WhatsApp] Contatos reais processados e salvos: ${savedCount}`);
+      }
+
+      if (this.io) {
+        this.io.emit('whatsapp:contacts_synced', {
+          status: 'completed',
+          totalContacts: db.getContacts().length,
+          totalGroups: db.getGroups().length,
+          totalConversations: db.getConversations().length,
+        });
+      }
     } catch (err) {
-      console.error('[WhatsApp] Erro ao sincronizar contatos:', err);
+      console.error('[WhatsApp] Erro ao sincronizar contatos e chats:', err);
     }
 
     return db.getContacts();

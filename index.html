@@ -12,6 +12,23 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <script>
+      // Filter out transient WebSocket closure rejections to prevent white screen crashes
+      window.addEventListener('unhandledrejection', function (event) {
+        var reason = event && event.reason;
+        var msg = (reason && (reason.message || reason.description || String(reason))) || '';
+        if (msg.indexOf('WebSocket') !== -1 || msg.indexOf('closed without opened') !== -1) {
+          event.preventDefault();
+          console.warn('[System] Ignorando rejeição transitória de WebSocket:', msg);
+        }
+      });
+      window.addEventListener('error', function (event) {
+        var msg = (event && (event.message || '')) || '';
+        if (msg.indexOf('WebSocket') !== -1 || msg.indexOf('closed without opened') !== -1) {
+          event.preventDefault();
+        }
+      });
+    </script>
   </head>
   <body class="bg-slate-900 text-slate-100 antialiased font-sans selection:bg-emerald-500 selection:text-white">
     <div id="root"></div>

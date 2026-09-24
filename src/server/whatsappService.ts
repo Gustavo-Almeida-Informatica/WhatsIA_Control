@@ -24,7 +24,7 @@ export async function testWhatsAppConnection(): Promise<{
   };
 }
 
-export async function sendWhatsAppCloudMessage(params: {
+export async function sendWhatsAppMessage(params: {
   recipientPhone: string;
   text: string;
 }): Promise<SendMessageResult> {
@@ -36,44 +36,6 @@ export async function sendWhatsAppCloudMessage(params: {
       success: false,
       error: err.message || 'Erro ao enviar mensagem via WhatsApp Web',
     };
-  }
-}
-
-export function parseWhatsAppWebhookPayload(body: any): {
-  senderPhone?: string;
-  senderName?: string;
-  messageText?: string;
-  messageId?: string;
-} | null {
-  try {
-    const entry = body?.entry?.[0];
-    const changes = entry?.changes?.[0];
-    const value = changes?.value;
-    const message = value?.messages?.[0];
-    const contact = value?.contacts?.[0];
-
-    if (!message) return null;
-
-    let messageText = '';
-    if (message.type === 'text') {
-      messageText = message.text?.body || '';
-    } else if (message.type === 'button') {
-      messageText = message.button?.text || '';
-    } else if (message.type === 'interactive') {
-      messageText = message.interactive?.button_reply?.title || message.interactive?.list_reply?.title || '';
-    } else {
-      messageText = `[Mensagem tipo ${message.type}]`;
-    }
-
-    return {
-      senderPhone: message.from,
-      senderName: contact?.profile?.name || message.from,
-      messageText,
-      messageId: message.id,
-    };
-  } catch (e) {
-    console.error('Error parsing WhatsApp Cloud webhook:', e);
-    return null;
   }
 }
 

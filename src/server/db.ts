@@ -5,6 +5,7 @@ import {
   WhatsAppConnection,
   ConnectionStatus,
   Contact,
+  GroupChat,
   Conversation,
   Message,
   Rule,
@@ -13,12 +14,16 @@ import {
   CannedResponse,
   SystemStats,
   HistoryRecord,
+  ManualFlow,
+  FlowNode,
+  FlowConnection,
 } from '../types';
 
 interface DatabaseData {
   user: User;
   connection: WhatsAppConnection;
   contacts: Contact[];
+  groups: GroupChat[];
   conversations: Conversation[];
   messages: Message[];
   rules: Rule[];
@@ -27,11 +32,10 @@ interface DatabaseData {
   logs: AutomationLog[];
   history: HistoryRecord[];
   automation_paused: boolean;
-  automation_mode: 'automatic' | 'manual';
+  automation_mode: 'manual';
+  manual_flow: ManualFlow;
+  flows: ManualFlow[];
 }
-
-const DATA_DIR = path.join(process.cwd(), 'data');
-const DB_FILE = path.join(DATA_DIR, 'db.json');
 
 const INITIAL_DATA: DatabaseData = {
   user: {
@@ -52,7 +56,15 @@ const INITIAL_DATA: DatabaseData = {
     last_verified_at: '',
   },
   automation_paused: false,
-  automation_mode: 'manual', // Padrão: manual
+  automation_mode: 'manual',
+  manual_flow: {
+    id: 'flow_default',
+    name: 'Fluxo Manual Principal',
+    nodes: [],
+    connections: [],
+    updated_at: new Date().toISOString(),
+  },
+  flows: [],
   ai_settings: {
     id: 'ai_conf_01',
     user_id: 'usr_main_01',
@@ -60,7 +72,7 @@ const INITIAL_DATA: DatabaseData = {
     personality: 'Educado e conciso',
     instructions: 'Responda com clareza e de forma breve.',
     objective: 'Auxiliar apenas quando expressamente autorizado pelo usuário.',
-    enabled: false, // Desativada por padrão!
+    enabled: false,
     fallback_enabled: false,
     temperature: 0.5,
     max_response_length: 250,
@@ -74,29 +86,117 @@ const INITIAL_DATA: DatabaseData = {
   canned_responses: [],
   rules: [],
   contacts: [],
+  groups: [],
   conversations: [],
   messages: [],
   logs: [],
   history: [],
 };
 
-class Database {
-  private data: DatabaseData;
+function normalizePhone(raw: string): string {
+  return (raw || '').replace(/\D/g, '');
+}
 
-  constructor() {
-    this.data = this.loadData();
-    this.persist();
+function phonesMatch(phoneA: string, phoneB: string): boolean {
+  const a = normalizePhone(phoneA);
+  const b = normalizePhone(phoneB);
+  if (!a || !b) return false;
+  if (a === b) return true;
+  if (a.startsWith('55') && b.startsWith('55')) {
+    const dddA = a.slice(2, 4);
+    const dddB = b.slice(2, 4);
+    if (dddA === dddB) {
+      const numA = a.slice(4);
+      const numB = b.slice(4);
+      if (numA.slice(-8) === numB.slice(-8)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function isTechnicalId(id?: string): boolean {
+  if (!id) return false;
+  const lower = id.toLowerCase();
+  if (lower === 'status@broadcast') return true;
+  if (lower.endsWith('@broadcast')) return true;
+  if (lower.endsWith('@newsletter')) return true;
+  if (lower.endsWith('@lid')) return true;
+  if (lower.startsWith('server@') || lower.startsWith('0@')) return true;
+  return false;
+}
+
+function isGroupId(id: string): boolean {
+  return Boolean(id && (id.endsWith('@g.us') || (id.includes('-') && id.endsWith('@g.us'))));
+}
+
+export interface IPersistenceAdapter {
+  load(): DatabaseData;
+  save(data: DatabaseData): void;
+}
+
+export class LocalFilePersistenceAdapter implements IPersistenceAdapter {
+  private dataDir: string;
+  private dbFile: string;
+
+  constructor(filePath?: string) {
+    this.dbFile = filePath || process.env.DATA_FILE_PATH || path.join(process.cwd(), 'data', 'db.json');
+    this.dataDir = path.dirname(this.dbFile);
   }
 
-  private loadData(): DatabaseData {
-    try {
-      if (!fs.existsSync(DATA_DIR)) {
-        fs.mkdirSync(DATA_DIR, { recursive: true });
+  private sanitizeData(data: DatabaseData): DatabaseData {
+    if (!data.groups) data.groups = [];
+    if (!data.contacts) data.contacts = [];
+
+    const realContacts: Contact[] = [];
+    const seenPhones = new Set<string>();
+
+    for (const c of data.contacts) {
+      if (c.type === 'group' || isGroupId(c.whatsapp_id)) {
+        if (!data.groups.some((g) => g.whatsapp_id === c.whatsapp_id)) {
+          data.groups.push({
+            id: c.id,
+            whatsapp_id: c.whatsapp_id,
+            name: c.name,
+            auto_reply_disabled: true,
+            created_at: c.created_at || new Date().toISOString(),
+            updated_at: c.updated_at || new Date().toISOString(),
+          });
+        }
+        continue;
       }
-      if (fs.existsSync(DB_FILE)) {
-        const content = fs.readFileSync(DB_FILE, 'utf-8');
+
+      if (isTechnicalId(c.whatsapp_id)) {
+        continue;
+      }
+
+      const clean = normalizePhone(c.phone);
+      if (!clean || clean.length < 8) continue;
+
+      if (seenPhones.has(clean)) {
+        continue;
+      }
+      seenPhones.add(clean);
+      realContacts.push({
+        ...c,
+        type: 'individual',
+      });
+    }
+
+    data.contacts = realContacts;
+    return data;
+  }
+
+  load(): DatabaseData {
+    try {
+      if (!fs.existsSync(this.dataDir)) {
+        fs.mkdirSync(this.dataDir, { recursive: true });
+      }
+      if (fs.existsSync(this.dbFile)) {
+        const content = fs.readFileSync(this.dbFile, 'utf-8');
         const parsed = JSON.parse(content);
-        return {
+        const merged: DatabaseData = {
           ...INITIAL_DATA,
           ...parsed,
           connection: {
@@ -112,27 +212,74 @@ class Database {
             ...(parsed.ai_settings || {}),
           },
           contacts: parsed.contacts || [],
+          groups: parsed.groups || [],
           conversations: parsed.conversations || [],
           messages: parsed.messages || [],
           logs: parsed.logs || [],
           history: parsed.history || [],
+          manual_flow: parsed.manual_flow || INITIAL_DATA.manual_flow,
+          flows: Array.isArray(parsed.flows) ? parsed.flows : [],
+          automation_mode: 'manual',
         };
+        return this.sanitizeData(merged);
       }
     } catch (err) {
-      console.error('Error loading database, initializing fresh state:', err);
+      console.error('[Storage] Erro ao carregar arquivo de persistência:', err);
     }
     return JSON.parse(JSON.stringify(INITIAL_DATA));
   }
 
-  public persist(): void {
+  save(data: DatabaseData): void {
     try {
-      if (!fs.existsSync(DATA_DIR)) {
-        fs.mkdirSync(DATA_DIR, { recursive: true });
+      if (!fs.existsSync(this.dataDir)) {
+        fs.mkdirSync(this.dataDir, { recursive: true });
       }
-      fs.writeFileSync(DB_FILE, JSON.stringify(this.data, null, 2), 'utf-8');
+      fs.writeFileSync(this.dbFile, JSON.stringify(data, null, 2), 'utf-8');
     } catch (err) {
-      console.error('Failed to write db.json:', err);
+      console.error('[Storage] Falha ao gravar arquivo de persistência:', err);
     }
+  }
+}
+
+export class MemoryPersistenceAdapter implements IPersistenceAdapter {
+  private memoryData: DatabaseData;
+
+  constructor(initialData?: DatabaseData) {
+    this.memoryData = initialData ? JSON.parse(JSON.stringify(initialData)) : JSON.parse(JSON.stringify(INITIAL_DATA));
+  }
+
+  load(): DatabaseData {
+    return this.memoryData;
+  }
+
+  save(data: DatabaseData): void {
+    this.memoryData = JSON.parse(JSON.stringify(data));
+  }
+}
+
+class Database {
+  private data: DatabaseData;
+  private adapter: IPersistenceAdapter;
+
+  constructor(adapter?: IPersistenceAdapter) {
+    if (adapter) {
+      this.adapter = adapter;
+    } else if (process.env.STORAGE_ADAPTER === 'memory') {
+      this.adapter = new MemoryPersistenceAdapter();
+    } else {
+      this.adapter = new LocalFilePersistenceAdapter();
+    }
+    this.data = this.adapter.load();
+    this.persist();
+  }
+
+  public setAdapter(adapter: IPersistenceAdapter): void {
+    this.adapter = adapter;
+    this.data = this.adapter.load();
+  }
+
+  public persist(): void {
+    this.adapter.save(this.data);
   }
 
   // --- GETTERS ---
@@ -144,17 +291,74 @@ class Database {
     return { ...this.data.connection };
   }
 
-  getContacts(): Contact[] {
-    return [...this.data.contacts];
+  getContacts(options?: { onlySaved?: boolean; search?: string }): Contact[] {
+    let list = this.data.contacts.filter((c) => {
+      // 1. Não considerar grupos como contatos
+      if (c.type === 'group' || isGroupId(c.whatsapp_id)) return false;
+      // 2. Não considerar IDs técnicos como contatos
+      if (isTechnicalId(c.whatsapp_id)) return false;
+      // 3. Se solicitado apenas contatos salvos no celular (agenda)
+      if (options?.onlySaved && c.is_my_contact === false) return false;
+      return true;
+    });
+
+    if (options?.search) {
+      const q = options.search.toLowerCase().trim();
+      const qDigits = normalizePhone(q);
+      list = list.filter((c) => {
+        if (c.name.toLowerCase().includes(q)) return true;
+        if (qDigits && normalizePhone(c.phone).includes(qDigits)) return true;
+        return false;
+      });
+    }
+
+    return list;
+  }
+
+  getGroups(): GroupChat[] {
+    return [...(this.data.groups || [])];
+  }
+
+  saveGroup(groupData: Partial<GroupChat> & { whatsapp_id: string; name: string }): GroupChat {
+    if (!this.data.groups) {
+      this.data.groups = [];
+    }
+
+    let existing = this.data.groups.find((g) => g.whatsapp_id === groupData.whatsapp_id);
+    if (existing) {
+      Object.assign(existing, {
+        ...groupData,
+        updated_at: new Date().toISOString(),
+      });
+      this.persist();
+      return existing;
+    }
+
+    const newGroup: GroupChat = {
+      id: groupData.id || `grp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      whatsapp_id: groupData.whatsapp_id,
+      name: groupData.name || 'Grupo sem nome',
+      participant_count: groupData.participant_count,
+      unread_count: groupData.unread_count || 0,
+      last_message: groupData.last_message,
+      last_message_time: groupData.last_message_time,
+      auto_reply_disabled: groupData.auto_reply_disabled ?? true,
+      is_read_only: groupData.is_read_only || false,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+
+    this.data.groups.push(newGroup);
+    this.persist();
+    return newGroup;
   }
 
   getContactById(id: string): Contact | undefined {
-    return this.data.contacts.find((c) => c.id === id);
+    return this.data.contacts.find((c) => c.id === id && c.type !== 'group' && !isGroupId(c.whatsapp_id));
   }
 
   getContactByPhone(phone: string): Contact | undefined {
-    const clean = phone.replace(/\D/g, '');
-    return this.data.contacts.find((c) => c.phone.replace(/\D/g, '') === clean);
+    return this.data.contacts.find((c) => phonesMatch(c.phone, phone) && c.type !== 'group' && !isGroupId(c.whatsapp_id));
   }
 
   getConversations(): (Conversation & { contact?: Contact; last_message_preview?: Message })[] {
@@ -209,6 +413,7 @@ class Database {
     const totalReplied = this.data.messages.filter((m) => m.sender === 'user' || m.sender === 'bot').length;
     const activeRulesCount = this.data.rules.filter((r) => r.is_active || r.enabled).length;
     const errorsCount = this.data.logs.filter((l) => l.result === 'error').length;
+    const realContacts = this.getContacts();
 
     return {
       connection_status: this.data.connection.status as any,
@@ -216,7 +421,9 @@ class Database {
       automation_mode: this.data.automation_mode,
       messages_received: totalReceived,
       messages_replied: totalReplied,
-      total_contacts: this.data.contacts.length,
+      total_contacts: realContacts.length,
+      total_groups: (this.data.groups || []).length,
+      total_conversations: this.data.conversations.length,
       active_rules: activeRulesCount,
       recent_errors: errorsCount,
     };
@@ -273,39 +480,158 @@ class Database {
     return this.data.automation_paused;
   }
 
-  setAutomationMode(mode: 'automatic' | 'manual'): 'automatic' | 'manual' {
-    this.data.automation_mode = mode;
+  setAutomationMode(mode?: string): 'manual' {
+    this.data.automation_mode = 'manual';
     this.persist();
-    return this.data.automation_mode;
+    return 'manual';
+  }
+
+  // --- VISUAL FLOWS (MODO MANUAL COM DIAGRAMA) ---
+  getManualFlow(): ManualFlow {
+    if (!this.data.manual_flow) {
+      this.data.manual_flow = {
+        id: 'flow_default',
+        name: 'Fluxo Manual Principal',
+        nodes: [],
+        connections: [],
+        updated_at: new Date().toISOString(),
+      };
+      this.persist();
+    }
+    return JSON.parse(JSON.stringify(this.data.manual_flow));
+  }
+
+  saveManualFlow(flowData: Partial<ManualFlow>): ManualFlow {
+    const current = this.getManualFlow();
+    const updated: ManualFlow = {
+      id: flowData.id || current.id || 'flow_default',
+      name: flowData.name || current.name || 'Fluxo Manual Principal',
+      nodes: Array.isArray(flowData.nodes) ? flowData.nodes : current.nodes || [],
+      connections: Array.isArray(flowData.connections) ? flowData.connections : current.connections || [],
+      updated_at: new Date().toISOString(),
+    };
+    this.data.manual_flow = updated;
+
+    // Sincroniza também na lista de fluxos
+    if (!Array.isArray(this.data.flows)) {
+      this.data.flows = [];
+    }
+    const idx = this.data.flows.findIndex((f) => f.id === updated.id);
+    if (idx >= 0) {
+      this.data.flows[idx] = updated;
+    } else {
+      this.data.flows.push(updated);
+    }
+
+    this.persist();
+    return JSON.parse(JSON.stringify(this.data.manual_flow));
+  }
+
+  getFlows(): ManualFlow[] {
+    const list = Array.isArray(this.data.flows) ? this.data.flows : [];
+    const active = this.getManualFlow();
+    if (!list.some((f) => f.id === active.id)) {
+      return [active, ...list];
+    }
+    return [...list];
+  }
+
+  saveFlow(flowData: Partial<ManualFlow>): ManualFlow {
+    return this.saveManualFlow(flowData);
+  }
+
+  deleteFlow(id: string): boolean {
+    if (!Array.isArray(this.data.flows)) return false;
+    const initialLen = this.data.flows.length;
+    this.data.flows = this.data.flows.filter((f) => f.id !== id);
+    if (this.data.manual_flow?.id === id) {
+      this.data.manual_flow = {
+        id: 'flow_default',
+        name: 'Fluxo Manual Principal',
+        nodes: [],
+        connections: [],
+        updated_at: new Date().toISOString(),
+      };
+    }
+    this.persist();
+    return this.data.flows.length < initialLen;
   }
 
   // --- CONTACTS ---
   saveContact(contactData: Partial<Contact> & { name: string; phone: string }): Contact {
-    const cleanNum = contactData.phone.replace(/\D/g, '');
-    let existing = this.data.contacts.find((c) => c.phone.replace(/\D/g, '') === cleanNum);
+    const cleanNum = normalizePhone(contactData.phone);
+    const whatsappId = contactData.whatsapp_id || (cleanNum ? `${cleanNum}@c.us` : '');
+
+    if (isGroupId(whatsappId) || contactData.type === 'group') {
+      this.saveGroup({
+        whatsapp_id: whatsappId,
+        name: contactData.name || 'Grupo WhatsApp',
+      });
+      return {
+        id: `grp_${whatsappId}`,
+        user_id: 'usr_main_01',
+        whatsapp_id: whatsappId,
+        name: contactData.name,
+        phone: contactData.phone,
+        type: 'group',
+        blocked: false,
+        auto_reply_disabled: true,
+        mode: 'manual',
+        allow_ai: false,
+        tags: [],
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+    }
+
+    if (isTechnicalId(whatsappId)) {
+      return null as any;
+    }
+
+    let existing = this.data.contacts.find((c) => {
+      if (whatsappId && c.whatsapp_id === whatsappId) return true;
+      if (phonesMatch(c.phone, contactData.phone)) return true;
+      return false;
+    });
 
     if (existing) {
+      const bestName =
+        contactData.name &&
+        contactData.name !== cleanNum &&
+        !contactData.name.startsWith('+') &&
+        contactData.name.trim().length > 0
+          ? contactData.name
+          : existing.name;
+
       Object.assign(existing, {
         ...contactData,
+        name: bestName,
+        type: 'individual',
+        is_my_contact: contactData.is_my_contact ?? existing.is_my_contact ?? false,
         updated_at: new Date().toISOString(),
       });
       this.persist();
       return existing;
     }
 
+    const formattedPhone = contactData.phone.startsWith('+')
+      ? contactData.phone
+      : `+${cleanNum}`;
+
     const newContact: Contact = {
       id: contactData.id || `cnt_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
       user_id: 'usr_main_01',
-      whatsapp_id: contactData.whatsapp_id || `${cleanNum}@c.us`,
+      whatsapp_id: whatsappId || `${cleanNum}@c.us`,
       name: contactData.name || cleanNum,
-      phone: contactData.phone,
-      type: contactData.type || 'individual',
+      phone: formattedPhone,
+      type: 'individual',
       blocked: contactData.blocked || false,
       auto_reply_disabled: contactData.auto_reply_disabled || false,
       automation_enabled: contactData.automation_enabled ?? false,
-      mode: contactData.mode || 'manual', // Padrão: manual
+      mode: 'manual', // Modo exclusivo: manual com fluxos visuais
       auto_reply_message: contactData.auto_reply_message || '',
       allow_ai: contactData.allow_ai || false,
+      is_my_contact: contactData.is_my_contact ?? false,
       tags: contactData.tags || [],
       unread_count: 0,
       created_at: new Date().toISOString(),
@@ -320,7 +646,7 @@ class Database {
   updateContactSettings(
     contactId: string,
     settings: {
-      mode?: 'manual' | 'automatic';
+      mode?: 'manual';
       automation_enabled?: boolean;
       allow_ai?: boolean;
       auto_reply_message?: string;
@@ -331,7 +657,7 @@ class Database {
     const contact = this.data.contacts.find((c) => c.id === contactId);
     if (!contact) return null;
 
-    if (settings.mode !== undefined) contact.mode = settings.mode;
+    contact.mode = 'manual';
     if (settings.automation_enabled !== undefined) contact.automation_enabled = settings.automation_enabled;
     if (settings.allow_ai !== undefined) contact.allow_ai = settings.allow_ai;
     if (settings.auto_reply_message !== undefined) contact.auto_reply_message = settings.auto_reply_message;

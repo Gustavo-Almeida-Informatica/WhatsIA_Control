@@ -4,10 +4,10 @@ import {
   PauseCircle,
   PlayCircle,
   ShieldCheck,
-  AlertTriangle,
-  Clock,
+  GitFork,
   Send,
   HelpCircle,
+  CheckCircle2,
 } from 'lucide-react';
 import { SystemStats } from '../types';
 
@@ -16,13 +16,11 @@ interface AutomationViewProps {
   onToggleEmergencyPause: () => void;
   onToggleMode: () => void;
   onOpenRuleTester?: () => void;
-  onOpenSimulator?: () => void;
 }
 
 export const AutomationView: React.FC<AutomationViewProps> = ({
   stats,
   onToggleEmergencyPause,
-  onToggleMode,
 }) => {
   const isPaused = stats?.automation_paused ?? false;
 
@@ -32,10 +30,10 @@ export const AutomationView: React.FC<AutomationViewProps> = ({
       <div className="border-b border-slate-800 pb-5">
         <h1 className="text-2xl font-bold text-white flex items-center gap-2.5">
           <Cpu className="w-7 h-7 text-emerald-400" />
-          Automação
+          Controle de Operação
         </h1>
         <p className="text-sm text-slate-400 mt-1">
-          Controle mestre da automação de mensagens em tempo real.
+          Controle mestre do sistema manual e execução de fluxos visuais.
         </p>
       </div>
 
@@ -54,12 +52,12 @@ export const AutomationView: React.FC<AutomationViewProps> = ({
             {isPaused ? (
               <span className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-red-950 text-red-300 border border-red-700 font-semibold text-sm">
                 <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-ping" />
-                🔴 Automação Pausada
+                🔴 Sistema Pausado
               </span>
             ) : (
               <span className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-950 text-emerald-300 border border-emerald-700 font-semibold text-sm">
                 <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
-                🟢 Automação Ativada
+                🟢 Sistema Operacional (Modo Manual Ativo)
               </span>
             )}
           </div>
@@ -68,19 +66,19 @@ export const AutomationView: React.FC<AutomationViewProps> = ({
           {isPaused ? (
             <div className="space-y-1">
               <p className="text-base font-semibold text-red-200">
-                Nenhuma mensagem automática será enviada enquanto estiver pausado.
+                O processamento de mensagens e fluxos está temporariamente pausado.
               </p>
               <p className="text-xs text-slate-300">
-                Mensagens manuais continuam funcionando normalmente.
+                Disparos diretos permanecem operacionais se o WhatsApp estiver conectado.
               </p>
             </div>
           ) : (
             <div className="space-y-1">
               <p className="text-base font-semibold text-emerald-200">
-                O sistema está pronto para responder contatos configurados automaticamente.
+                O sistema está operando no Modo Manual com Diagramas Visuais.
               </p>
               <p className="text-xs text-slate-300">
-                Se precisar interromper temporariamente qualquer disparo automático, clique no botão abaixo.
+                As respostas configuradas no editor visual [ MAX ] ↓ [ RESPOSTA ] estão ativas e sob total controle do usuário.
               </p>
             </div>
           )}
@@ -99,12 +97,12 @@ export const AutomationView: React.FC<AutomationViewProps> = ({
               {isPaused ? (
                 <>
                   <PlayCircle className="w-6 h-6" />
-                  <span>Retomar automação</span>
+                  <span>Retomar sistema</span>
                 </>
               ) : (
                 <>
                   <PauseCircle className="w-6 h-6" />
-                  <span>Pausar toda automação</span>
+                  <span>Pausar sistema</span>
                 </>
               )}
             </button>
@@ -116,21 +114,21 @@ export const AutomationView: React.FC<AutomationViewProps> = ({
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
         <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-2">
           <div className="flex items-center gap-2 font-bold text-white text-sm">
-            <Clock className="w-4 h-4 text-emerald-400" />
-            <span>Disparos Automáticos</span>
+            <GitFork className="w-4 h-4 text-emerald-400" />
+            <span>Fluxos Visuais de Mensagens</span>
           </div>
           <p className="text-slate-400 leading-relaxed">
-            As respostas automáticas são disparadas quando um contato configurado em &ldquo;Automático&rdquo; envia uma mensagem para o número conectado.
+            No modo manual, você cria blocos de contato e blocos de mensagem e conecta-os no diagrama. A mensagem é enviada exatamente como configurada, sem alterações no texto.
           </p>
         </div>
 
         <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-2">
           <div className="flex items-center gap-2 font-bold text-white text-sm">
-            <Send className="w-4 h-4 text-teal-400" />
-            <span>Envios Manuais</span>
+            <ShieldCheck className="w-4 h-4 text-teal-400" />
+            <span>Modo IA Sob Demanda</span>
           </div>
           <p className="text-slate-400 leading-relaxed">
-            Mensagens manuais enviadas por você na aba &ldquo;Mensagens&rdquo; continuam sendo transmitidas mesmo se a automação geral estiver pausada.
+            A Inteligência Artificial permanece desativada por padrão e só responderá aos contatos onde você tiver ativado explicitamente a permissão nas configurações do contato.
           </p>
         </div>
       </div>

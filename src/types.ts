@@ -29,6 +29,35 @@ export interface WhatsAppConnection {
 
 export type ContactType = 'individual' | 'group' | 'business';
 
+export type FlowNodeType = 'contact' | 'message';
+
+export interface FlowNode {
+  id: string;
+  type: FlowNodeType;
+  x: number;
+  y: number;
+  data: {
+    contactId?: string;
+    contactName?: string;
+    phone?: string;
+    text?: string;
+  };
+}
+
+export interface FlowConnection {
+  id: string;
+  fromNodeId: string; // Contact node id
+  toNodeId: string;   // Message node id
+}
+
+export interface ManualFlow {
+  id: string;
+  name: string;
+  nodes: FlowNode[];
+  connections: FlowConnection[];
+  updated_at: string;
+}
+
 export interface Contact {
   id: string;
   user_id: string;
@@ -38,16 +67,31 @@ export interface Contact {
   type: ContactType;
   blocked: boolean;
   auto_reply_disabled: boolean; // "Não responder automaticamente a este contato"
-  automation_enabled?: boolean; // Automação ON/OFF por contato
-  mode: 'manual' | 'automatic'; // Modo de envio configurado pelo usuário
-  auto_reply_message?: string; // Mensagem automática personalizada definida pelo usuário
-  allow_ai: boolean; // Se a IA tem permissão para responder a este contato (padrão false)
+  automation_enabled?: boolean; // Habilitado para fluxo/regras
+  mode: 'manual'; // Modo exclusivo: manual com fluxos visuais
+  auto_reply_message?: string; // Mensagem personalizada do fluxo configurada pelo usuário
+  allow_ai: boolean; // Se a IA tem permissão para responder a este contato (padrão false, estritamente desativada por padrão)
   notes?: string;
   tags: string[];
   unread_count?: number;
   last_message?: string;
   last_message_time?: string;
   last_interaction_at?: string;
+  is_my_contact?: boolean; // Contato salvo na agenda do celular
+  created_at: string;
+  updated_at: string;
+}
+
+export interface GroupChat {
+  id: string;
+  whatsapp_id: string;
+  name: string;
+  participant_count?: number;
+  unread_count?: number;
+  last_message?: string;
+  last_message_time?: string;
+  auto_reply_disabled?: boolean;
+  is_read_only?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -214,10 +258,12 @@ export interface CannedResponse {
 export interface SystemStats {
   connection_status: ConnectionStatus;
   automation_paused: boolean;
-  automation_mode: 'automatic' | 'manual';
+  automation_mode: 'manual';
   messages_received: number;
   messages_replied: number;
   total_contacts: number;
+  total_groups?: number;
+  total_conversations?: number;
   active_rules: number;
   recent_errors: number;
 }

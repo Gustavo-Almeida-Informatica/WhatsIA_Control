@@ -9,12 +9,13 @@ import {
   Square,
   Loader2,
   MessageSquare,
-  ArrowRight,
   ShieldCheck,
-  Sparkles,
+  GitFork,
+  ArrowRight,
 } from 'lucide-react';
 import { Contact, WhatsAppConnection } from '../types';
 import { api } from '../services/api';
+import { VisualFlowEditor } from './VisualFlowEditor';
 
 interface MessagesViewProps {
   contacts: Contact[];
@@ -28,17 +29,13 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
   connection,
   onRefresh,
 }) => {
-  // Step 1: Escolher contato(s)
+  // Tab switcher: 'flow' (Visual Flow Editor) vs 'direct' (Envio Manual Rápido)
+  const [activeSubTab, setActiveSubTab] = useState<'flow' | 'direct'>('flow');
+
+  // Envio Direto Manual State
   const [selectedContactIds, setSelectedContactIds] = useState<string[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
-
-  // Step 2: Escolher o modo (Manual vs Automático)
-  const [mode, setMode] = useState<'manual' | 'automatic'>('manual');
-
-  // Step 3: Campo de texto
   const [messageText, setMessageText] = useState('');
-
-  // Step 4 & 5: Resumo e Envio
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [feedback, setFeedback] = useState<{
@@ -60,7 +57,6 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
     filteredContacts.length > 0 &&
     filteredContacts.every((c) => selectedContactIds.includes(c.id));
 
-  // Selection handlers (Item 9)
   const toggleContact = (id: string) => {
     setSelectedContactIds((prev) =>
       prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
@@ -75,7 +71,6 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
     }
   };
 
-  // Button [Enviar mensagem] click -> Opens confirmation summary (Item 12)
   const handleOpenConfirm = () => {
     setFeedback(null);
     if (selectedContactIds.length === 0) {
@@ -96,11 +91,11 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
       return;
     }
 
-    if (!isConnected && mode === 'manual') {
+    if (!isConnected) {
       setFeedback({
         type: 'error',
         title: 'WhatsApp Desconectado',
-        description: 'Conecte seu WhatsApp escaneando o QR Code antes de enviar mensagens manuais.',
+        description: 'Conecte seu WhatsApp escaneando o QR Code antes de enviar mensagens.',
       });
       return;
     }
@@ -108,62 +103,40 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
     setShowConfirmModal(true);
   };
 
-  // Execute Submission (Items 10 and 11)
   const handleExecuteSend = async () => {
     setIsSubmitting(true);
     setFeedback(null);
 
     try {
-      if (mode === 'manual') {
-        // ITEM 10: ENVIO MANUAL
-        // 1. Envia exatamente essa mensagem para os contatos selecionados
-        const sendResult = await api.sendManualMessage({
-          contact_ids: selectedContactIds,
-          message: messageText.trim(),
-        });
+      // Envio Manual direto: envia o texto exato sem modificações
+      const exactText = messageText.trim();
+      const sendResult = await api.sendManualMessage({
+        contact_ids: selectedContactIds,
+        message: exactText,
+      });
 
-        // 2. Não deixa a IA responder esse contato depois (modo manual, allow_ai: false)
-        for (const id of selectedContactIds) {
-          await api.updateContactSettings({
-            contact_id: id,
-            mode: 'manual',
-            allow_ai: false,
-          });
-        }
-
-        setFeedback({
-          type: 'success',
-          title: 'Mensagem manual enviada com sucesso!',
-          description: `${sendResult.sentCount} mensagem(ns) transmitida(s) via WhatsApp Web e registradas no histórico.`,
-        });
-        setMessageText('');
-      } else {
-        // ITEM 11: ENVIO AUTOMÁTICO
-        // Salva aquela mensagem como resposta automática para o(s) contato(s)
-        for (const id of selectedContactIds) {
-          await api.updateContactSettings({
-            contact_id: id,
-            mode: 'automatic',
-            automation_enabled: true,
-            auto_reply_message: messageText.trim(),
-            allow_ai: false,
-          });
-        }
-
-        setFeedback({
-          type: 'success',
-          title: 'Modo Automático configurado com sucesso!',
-          description: `A mensagem foi salva como resposta automática para ${selectedContactIds.length} contato(s). Quando eles enviarem mensagem, o sistema responderá com este texto.`,
+      // Garante que os contatos permanecem em modo manual
+      for (const id of selectedContactIds) {
+        await api.updateContactSettings({
+          contact_id: id,
+          mode: 'manual',
+          allow_ai: false,
         });
       }
 
+      setFeedback({
+        type: 'success',
+        title: 'Mensagem enviada com sucesso!',
+        description: `${sendResult.sentCount} mensagem(ns) transmitida(s) via WhatsApp Web exatamente como digitadas.`,
+      });
+      setMessageText('');
       setShowConfirmModal(false);
       onRefresh();
     } catch (err: any) {
       setFeedback({
         type: 'error',
         title: 'Erro na operação',
-        description: err.message || 'Falha ao processar a mensagem.',
+        description: err.message || 'Falha ao processar o envio manual.',
       });
       setShowConfirmModal(false);
     } finally {
@@ -172,326 +145,280 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
   };
 
   return (
-    <div id="messages-view-container" className="p-6 max-w-6xl mx-auto space-y-6">
-      {/* Header */}
-      <div className="border-b border-slate-800 pb-5">
-        <h1 className="text-2xl font-bold text-white flex items-center gap-2.5">
-          <MessageSquare className="w-7 h-7 text-emerald-400" />
-          Mensagens
-        </h1>
-        <p className="text-xs text-slate-400 mt-1">
-          Envio e automação controlados exclusivamente por você: escolha o contato, o modo e o texto.
-        </p>
+    <div id="messages-view-container" className="flex flex-col h-full overflow-hidden">
+      {/* View Sub-Header with Tabs */}
+      <div className="p-4 sm:px-6 bg-slate-900 border-b border-slate-800 flex flex-wrap items-center justify-between gap-4 shrink-0">
+        <div>
+          <h1 className="text-xl sm:text-2xl font-bold text-white flex items-center gap-2.5">
+            <MessageSquare className="w-6 h-6 text-emerald-400" />
+            Mensagens & Fluxo Manual
+          </h1>
+          <p className="text-xs text-slate-400 mt-0.5">
+            Modo Manual com diagramas visuais e envio exato de mensagens.
+          </p>
+        </div>
+
+        {/* Tab switcher */}
+        <div className="flex items-center bg-slate-950 p-1 rounded-2xl border border-slate-800">
+          <button
+            id="tab-visual-flow"
+            onClick={() => setActiveSubTab('flow')}
+            className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-2 transition-all ${
+              activeSubTab === 'flow'
+                ? 'bg-emerald-600 text-white shadow-md shadow-emerald-950'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <GitFork className="w-3.5 h-3.5" />
+            <span>Diagrama de Fluxo Manual</span>
+          </button>
+
+          <button
+            id="tab-direct-send"
+            onClick={() => setActiveSubTab('direct')}
+            className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-2 transition-all ${
+              activeSubTab === 'direct'
+                ? 'bg-emerald-600 text-white shadow-md shadow-emerald-950'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <Send className="w-3.5 h-3.5" />
+            <span>Envio Rápido</span>
+          </button>
+        </div>
       </div>
 
-      {/* Feedback Alert */}
-      {feedback && (
-        <div
-          className={`p-4 rounded-2xl border flex items-start gap-3 text-xs shadow-lg ${
-            feedback.type === 'success'
-              ? 'bg-emerald-950/60 border-emerald-800 text-emerald-200'
-              : 'bg-red-950/60 border-red-800 text-red-200'
-          }`}
-        >
-          {feedback.type === 'success' ? (
-            <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
-          ) : (
-            <AlertCircle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
+      {/* View Body */}
+      {activeSubTab === 'flow' ? (
+        /* 1. VISUAL FLOW EDITOR (MODO MANUAL COM DIAGRAMA VISUAL) */
+        <div className="flex-1 min-h-0">
+          <VisualFlowEditor
+            contacts={contacts}
+            connection={connection}
+            onRefresh={onRefresh}
+          />
+        </div>
+      ) : (
+        /* 2. ENVIO RÁPIDO MANUAL */
+        <div className="flex-1 overflow-y-auto p-6 max-w-6xl mx-auto space-y-6 w-full">
+          {/* Feedback Banner */}
+          {feedback && (
+            <div
+              className={`p-4 rounded-2xl border flex items-start gap-3 transition-all ${
+                feedback.type === 'success'
+                  ? 'bg-emerald-950/60 border-emerald-800 text-emerald-200'
+                  : 'bg-red-950/60 border-red-800 text-red-200'
+              }`}
+            >
+              {feedback.type === 'success' ? (
+                <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
+              ) : (
+                <AlertCircle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
+              )}
+              <div className="space-y-0.5">
+                <strong className="block text-sm font-bold">{feedback.title}</strong>
+                <p className="text-xs text-slate-300 leading-relaxed">{feedback.description}</p>
+              </div>
+            </div>
           )}
-          <div className="flex-1 space-y-0.5">
-            <strong className="block text-sm font-bold">{feedback.title}</strong>
-            <p className="leading-relaxed opacity-90">{feedback.description}</p>
+
+          {/* Grid Layout: Contact Selector + Direct Composer */}
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+            {/* Coluna 1: Escolher Contato */}
+            <div className="lg:col-span-5 bg-slate-900 border border-slate-800 rounded-3xl p-5 shadow-xl space-y-4">
+              <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                <label className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-2">
+                  <Users className="w-4 h-4 text-emerald-400" />
+                  1. Escolher Contato(s)
+                </label>
+                <span className="text-[11px] text-slate-400 font-mono">
+                  {selectedContactIds.length} selecionado(s)
+                </span>
+              </div>
+
+              {/* Busca */}
+              <div className="relative">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  placeholder="Buscar contato real..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="w-full pl-9 pr-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+                />
+              </div>
+
+              {/* Botão Selecionar Todos */}
+              <div className="flex items-center justify-between text-xs">
+                <button
+                  type="button"
+                  onClick={handleSelectAll}
+                  className="text-emerald-400 hover:text-emerald-300 font-semibold flex items-center gap-1.5 transition-colors"
+                >
+                  {allFilteredSelected ? (
+                    <>
+                      <CheckSquare className="w-4 h-4" />
+                      <span>Desmarcar todos</span>
+                    </>
+                  ) : (
+                    <>
+                      <Square className="w-4 h-4" />
+                      <span>Selecionar todos ({filteredContacts.length})</span>
+                    </>
+                  )}
+                </button>
+              </div>
+
+              {/* Lista com scroll */}
+              <div className="max-h-[360px] overflow-y-auto space-y-1.5 pr-1 divide-y divide-slate-800/40">
+                {filteredContacts.length === 0 ? (
+                  <div className="text-center py-8 text-xs text-slate-500">
+                    Nenhum contato encontrado.
+                  </div>
+                ) : (
+                  filteredContacts.map((c) => {
+                    const isSelected = selectedContactIds.includes(c.id);
+                    return (
+                      <div
+                        key={c.id}
+                        onClick={() => toggleContact(c.id)}
+                        className={`pt-2 flex items-center gap-3 p-2.5 rounded-xl cursor-pointer transition-colors ${
+                          isSelected
+                            ? 'bg-emerald-950/40 text-emerald-200 border border-emerald-800/60'
+                            : 'hover:bg-slate-800/50 text-slate-300'
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => {}}
+                          className="rounded text-emerald-500 focus:ring-emerald-500 bg-slate-950 border-slate-700"
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center justify-between">
+                            <strong className="text-xs font-bold text-white truncate block">
+                              {c.name}
+                            </strong>
+                            <span className="text-[10px] text-slate-400">Modo Manual</span>
+                          </div>
+                          <span className="text-[11px] font-mono text-slate-400 block truncate">
+                            {c.phone}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+
+            {/* Coluna 2: Mensagem e Envio Exato */}
+            <div className="lg:col-span-7 bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-xl space-y-6">
+              <div className="border-b border-slate-800 pb-3 flex items-center justify-between">
+                <label className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-2">
+                  <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                  2. Conteúdo da Mensagem (Envio Exato)
+                </label>
+                <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 font-semibold">
+                  Modo Manual
+                </span>
+              </div>
+
+              <div className="space-y-2">
+                <textarea
+                  id="textarea-direct-message"
+                  rows={6}
+                  placeholder="Digite aqui o texto exato que será enviado..."
+                  value={messageText}
+                  onChange={(e) => setMessageText(e.target.value)}
+                  className="w-full p-4 bg-slate-950 border border-slate-800 rounded-2xl text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 text-xs font-sans leading-relaxed resize-none shadow-inner"
+                />
+                <p className="text-[11px] text-slate-400 flex items-center gap-1.5">
+                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>
+                    O texto será transmitido exatamente como digitado acima, sem qualquer alteração.
+                  </span>
+                </p>
+              </div>
+
+              {/* Ação de Envio */}
+              <div className="pt-2 flex flex-col sm:flex-row items-center justify-between gap-4">
+                <div className="text-xs text-slate-400">
+                  {selectedContactIds.length > 0 ? (
+                    <span>
+                      Destinatários: <strong className="text-white">{selectedContactIds.length}</strong> selecionado(s)
+                    </span>
+                  ) : (
+                    <span className="text-amber-400">Selecione destinatários à esquerda</span>
+                  )}
+                </div>
+
+                <button
+                  id="btn-direct-send-message"
+                  onClick={handleOpenConfirm}
+                  disabled={selectedContactIds.length === 0 || !messageText.trim()}
+                  className={`w-full sm:w-auto px-6 py-3 rounded-2xl font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-2 shadow-lg transition-all ${
+                    selectedContactIds.length > 0 && messageText.trim()
+                      ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-950 cursor-pointer'
+                      : 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700'
+                  }`}
+                >
+                  <Send className="w-4 h-4" />
+                  <span>Enviar mensagem manual</span>
+                </button>
+              </div>
+            </div>
           </div>
-          <button onClick={() => setFeedback(null)} className="text-slate-400 hover:text-white">
-            ✕
-          </button>
         </div>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* COLUNA ESQUERDA: 1. Escolher contato(s) (Item 9) */}
-        <div className="lg:col-span-5 bg-slate-900 border border-slate-800 rounded-3xl p-5 shadow-xl space-y-4 flex flex-col h-[600px]">
-          <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-            <div>
-              <h2 className="text-sm font-bold text-white flex items-center gap-2">
-                <Users className="w-4 h-4 text-emerald-400" />
-                1. Escolher Contato(s)
-              </h2>
-              <span className="text-[11px] text-slate-400">
-                {selectedContactIds.length} selecionado(s)
-              </span>
-            </div>
-
-            <button
-              onClick={handleSelectAll}
-              className="text-xs font-semibold text-emerald-400 hover:text-emerald-300 transition-colors"
-            >
-              {allFilteredSelected ? 'Desmarcar todos' : 'Selecionar todos'}
-            </button>
-          </div>
-
-          {/* Search */}
-          <div className="relative">
-            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-            <input
-              type="text"
-              placeholder="Buscar contato..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full pl-8 pr-3 py-1.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
-            />
-          </div>
-
-          {/* Lista de Contatos */}
-          <div className="flex-1 overflow-y-auto divide-y divide-slate-800/80 pr-1 space-y-1">
-            {filteredContacts.length === 0 ? (
-              <div className="text-center py-12 text-xs text-slate-500">
-                Nenhum contato disponível.
-              </div>
-            ) : (
-              filteredContacts.map((c) => {
-                const isSelected = selectedContactIds.includes(c.id);
-                return (
-                  <div
-                    key={c.id}
-                    onClick={() => toggleContact(c.id)}
-                    className={`p-2.5 rounded-xl flex items-center gap-3 cursor-pointer transition-colors ${
-                      isSelected ? 'bg-emerald-950/40 border border-emerald-800/60' : 'hover:bg-slate-800/50'
-                    }`}
-                  >
-                    <button type="button" className="text-slate-400">
-                      {isSelected ? (
-                        <CheckSquare className="w-4 h-4 text-emerald-400" />
-                      ) : (
-                        <Square className="w-4 h-4 text-slate-600" />
-                      )}
-                    </button>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center justify-between">
-                        <strong className="text-xs font-bold text-white truncate block">
-                          {c.name}
-                        </strong>
-                        <span className="text-[10px] text-slate-500 font-mono">
-                          {c.mode === 'automatic' ? 'Auto' : 'Manual'}
-                        </span>
-                      </div>
-                      <span className="text-[11px] font-mono text-slate-400 block truncate">
-                        {c.phone}
-                      </span>
-                    </div>
-                  </div>
-                );
-              })
-            )}
-          </div>
-        </div>
-
-        {/* COLUNA DIREITA: 2. Modo & 3. Mensagem & 4. Botão (Item 9) */}
-        <div className="lg:col-span-7 bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-xl space-y-6 flex flex-col justify-between">
-          <div className="space-y-6">
-            {/* 2. Escolher o modo */}
-            <div className="space-y-2">
-              <label className="block text-xs font-bold text-white uppercase tracking-wider">
-                2. Escolher o Modo
-              </label>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-                {/* Modo Manual */}
-                <label
-                  onClick={() => setMode('manual')}
-                  className={`p-4 rounded-2xl border cursor-pointer transition-all ${
-                    mode === 'manual'
-                      ? 'bg-slate-800 border-emerald-500 shadow-lg text-white'
-                      : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700'
-                  }`}
-                >
-                  <div className="flex items-center gap-2 mb-1.5">
-                    <input
-                      type="radio"
-                      name="send_mode"
-                      value="manual"
-                      checked={mode === 'manual'}
-                      onChange={() => setMode('manual')}
-                      className="text-emerald-500 focus:ring-emerald-500"
-                    />
-                    <strong className="text-sm font-bold text-white">○ Modo Manual</strong>
-                  </div>
-                  <p className="text-[11px] text-slate-400 leading-relaxed pl-5">
-                    Envia exatamente a mensagem escrita agora para os contatos selecionados. A IA não
-                    responderá esse contato depois.
-                  </p>
-                </label>
-
-                {/* Modo Automático */}
-                <label
-                  onClick={() => setMode('automatic')}
-                  className={`p-4 rounded-2xl border cursor-pointer transition-all ${
-                    mode === 'automatic'
-                      ? 'bg-emerald-950/60 border-emerald-500 shadow-lg text-emerald-200'
-                      : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700'
-                  }`}
-                >
-                  <div className="flex items-center gap-2 mb-1.5">
-                    <input
-                      type="radio"
-                      name="send_mode"
-                      value="automatic"
-                      checked={mode === 'automatic'}
-                      onChange={() => setMode('automatic')}
-                      className="text-emerald-500 focus:ring-emerald-500"
-                    />
-                    <strong className="text-sm font-bold text-white">○ Modo Automático</strong>
-                  </div>
-                  <p className="text-[11px] text-slate-400 leading-relaxed pl-5">
-                    Salva a mensagem como resposta automática. Quando o contato enviar mensagem, o
-                    sistema responderá com este texto.
-                  </p>
-                </label>
-              </div>
-            </div>
-
-            {/* 3. Campo de texto */}
-            <div className="space-y-2">
-              <label className="block text-xs font-bold text-white uppercase tracking-wider">
-                3. Mensagem a ser enviada:
-              </label>
-
-              <textarea
-                id="textarea-message-content"
-                rows={6}
-                value={messageText}
-                onChange={(e) => setMessageText(e.target.value)}
-                placeholder="[Digite a mensagem aqui...]"
-                className="w-full p-4 bg-slate-950 border border-slate-800 rounded-2xl text-xs text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500 leading-relaxed font-sans"
-              />
-
-              <div className="flex items-center justify-between text-[11px] text-slate-400 px-1">
-                <span>{messageText.length} caracteres</span>
-                <span>
-                  {mode === 'manual'
-                    ? 'Disparo imediato aos contatos'
-                    : 'Será configurada como auto-resposta'}
-                </span>
-              </div>
-            </div>
-          </div>
-
-          {/* 4. Botão [Enviar mensagem] */}
-          <div className="pt-4 border-t border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-4">
-            <div className="text-xs text-slate-400">
-              {selectedContactIds.length === 0 ? (
-                <span className="text-amber-400">⚠️ Selecione ao menos um contato</span>
-              ) : (
-                <span>
-                  Pronto para {mode === 'manual' ? 'enviar para' : 'aplicar a'}{' '}
-                  <strong className="text-white font-bold">
-                    {selectedContactIds.length} contato(s)
-                  </strong>
-                </span>
-              )}
-            </div>
-
-            <button
-              id="btn-submit-message"
-              onClick={handleOpenConfirm}
-              disabled={selectedContactIds.length === 0 || !messageText.trim()}
-              className="w-full sm:w-auto px-8 py-3.5 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 disabled:opacity-50 text-white font-bold text-xs rounded-2xl shadow-xl shadow-emerald-950/50 transition-all flex items-center justify-center gap-2"
-            >
-              <Send className="w-4 h-4" />
-              <span>Enviar mensagem</span>
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {/* 12. Modal de Confirmação e Resumo Antes do Envio */}
+      {/* Confirmation Modal */}
       {showConfirmModal && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-lg w-full p-6 shadow-2xl space-y-6">
             <div className="border-b border-slate-800 pb-4">
-              <h3 className="text-base font-bold text-white flex items-center gap-2">
+              <h2 className="text-lg font-bold text-white flex items-center gap-2">
                 <ShieldCheck className="w-5 h-5 text-emerald-400" />
-                Resumo antes de enviar (Confirmação)
-              </h3>
+                Confirmar Envio Manual
+              </h2>
               <p className="text-xs text-slate-400 mt-1">
-                Revise os detalhes da operação antes de confirmar:
+                Revise os detalhes antes de transmitir via WhatsApp Web.
               </p>
             </div>
 
-            {/* Resumo Exigido no Item 12 */}
-            <div className="space-y-3 text-xs">
-              <div className="p-4 bg-slate-950 rounded-2xl border border-slate-800 space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-400">Destinatários:</span>
-                  <span className="font-bold text-white">
-                    {selectedContactIds.length} contatos selecionados
-                  </span>
-                </div>
-
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-400">Modo:</span>
-                  <span
-                    className={`font-bold px-2 py-0.5 rounded ${
-                      mode === 'automatic'
-                        ? 'bg-emerald-950 text-emerald-300 border border-emerald-800'
-                        : 'bg-slate-800 text-slate-200 border border-slate-700'
-                    }`}
-                  >
-                    {mode === 'manual' ? 'Modo Manual' : 'Modo Automático'}
-                  </span>
+            <div className="space-y-4 text-xs">
+              <div className="p-3.5 bg-slate-950 rounded-2xl border border-slate-800 space-y-1">
+                <span className="text-slate-400 font-semibold block">Destinatários:</span>
+                <div className="text-white font-medium">
+                  {selectedContacts.map((c) => c.name).slice(0, 5).join(', ')}
+                  {selectedContacts.length > 5 && ` e mais ${selectedContacts.length - 5} contatos.`}
                 </div>
               </div>
 
-              <div className="p-4 bg-slate-950 rounded-2xl border border-slate-800 space-y-1.5">
-                <span className="text-slate-400 font-semibold block">Mensagem: preview</span>
-                <p className="text-slate-200 font-mono text-[11px] bg-slate-900 p-3 rounded-xl border border-slate-800/80 whitespace-pre-wrap">
-                  {messageText.trim()}
+              <div className="p-3.5 bg-slate-950 rounded-2xl border border-slate-800 space-y-1">
+                <span className="text-slate-400 font-semibold block">Texto exato a ser enviado:</span>
+                <p className="text-slate-200 italic font-mono bg-slate-900 p-2.5 rounded-xl border border-slate-800 text-[11px]">
+                  &ldquo;{messageText}&rdquo;
                 </p>
-              </div>
-
-              {/* Lista dos primeiros contatos */}
-              <div className="px-1 text-[11px] text-slate-400 max-h-24 overflow-y-auto">
-                <span className="font-semibold block mb-1">Contatos que serão atualizados:</span>
-                <ul className="list-disc list-inside space-y-0.5">
-                  {selectedContacts.slice(0, 5).map((c) => (
-                    <li key={c.id}>
-                      {c.name} ({c.phone})
-                    </li>
-                  ))}
-                  {selectedContacts.length > 5 && (
-                    <li>e mais {selectedContacts.length - 5} contato(s)...</li>
-                  )}
-                </ul>
               </div>
             </div>
 
-            {/* Botões do Modal */}
-            <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-800">
+            <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-800">
               <button
                 type="button"
                 onClick={() => setShowConfirmModal(false)}
-                className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold text-xs"
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold text-xs"
               >
-                Voltar e editar
+                Cancelar
               </button>
-
               <button
                 type="button"
                 disabled={isSubmitting}
                 onClick={handleExecuteSend}
-                className="px-6 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 disabled:opacity-50 text-white font-bold text-xs flex items-center gap-2 shadow-lg shadow-emerald-950"
+                className="px-5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-2 shadow-lg shadow-emerald-950"
               >
-                {isSubmitting ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>Processando...</span>
-                  </>
-                ) : (
-                  <>
-                    <Send className="w-4 h-4" />
-                    <span>Confirmar e {mode === 'manual' ? 'Enviar' : 'Configurar'}</span>
-                  </>
-                )}
+                {isSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                <span>Confirmar e Enviar</span>
               </button>
             </div>
           </div>
