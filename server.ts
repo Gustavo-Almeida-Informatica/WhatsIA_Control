@@ -7,7 +7,8 @@ import { createServer as createViteServer } from 'vite';
 import dotenv from 'dotenv';
 import { db } from './src/server/db';
 import { whatsappManager } from './src/server/whatsappClient';
-import { testRulesEvaluation, processIncomingMessage } from './src/server/ruleEngine';
+import { testRulesEvaluation, processIncomingMessage, evaluateVisualFlow } from './src/server/ruleEngine';
+import { Contact } from './src/types';
 
 dotenv.config();
 
@@ -56,6 +57,11 @@ async function startServer() {
   });
 
   app.put('/api/user', (req, res) => {
+    const updated = db.updateUser(req.body);
+    res.json(updated);
+  });
+
+  app.post('/api/user', (req, res) => {
     const updated = db.updateUser(req.body);
     res.json(updated);
   });
@@ -137,8 +143,12 @@ async function startServer() {
   // GET /api/contacts (suporta busca, filtro por agenda e paginação sob demanda)
   app.get('/api/contacts', (req, res) => {
     const search = req.query.search as string | undefined;
-    const onlySaved = req.query.only_saved === 'true';
-    const allMatching = db.getContacts({ search, onlySaved });
+    const isAll = req.query.all === 'true';
+    const onlySavedParam = req.query.only_saved;
+    // Por padrão (Item 1): retorna apenas contatos reais salvos na agenda do WhatsApp (~392)
+    // Se all=true ou only_saved=false, inclui também participantes de conversas não salvos
+    const onlySaved = isAll ? false : onlySavedParam !== 'false';
+    const allMatching = db.getContacts({ search, onlySaved, all: isAll });
 
     const pageStr = req.query.page as string | undefined;
     const limitStr = req.query.limit as string | undefined;
@@ -573,6 +583,40 @@ async function startServer() {
       });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err.message || 'Erro ao disparar mensagem do fluxo.' });
+    }
+  });
+
+  // POST /api/flows/evaluate-test (simulação do fluxo visual)
+  app.post('/api/flows/evaluate-test', (req, res) => {
+    try {
+      const { contact_id, phone, message } = req.body;
+      let contact: Contact | undefined | null = contact_id ? db.getContactById(contact_id) : null;
+      if (!contact && phone) {
+        contact = db.getContactByPhone(phone);
+      }
+      if (!contact) {
+        contact = {
+          id: 'temp_sim_contact',
+          user_id: 'usr_main_01',
+          name: phone || 'Contato Teste',
+          phone: phone || '+5511999999999',
+          whatsapp_id: '5511999999999@c.us',
+          type: 'individual',
+          mode: 'manual',
+          is_my_contact: true,
+          has_conversation: true,
+          blocked: false,
+          auto_reply_disabled: false,
+          allow_ai: false,
+          tags: [],
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        };
+      }
+      const evalResult = evaluateVisualFlow(contact, String(message || ''));
+      res.json(evalResult);
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message || 'Erro ao avaliar fluxo visual' });
     }
   });
 

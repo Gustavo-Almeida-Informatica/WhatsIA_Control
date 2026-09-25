@@ -6,21 +6,34 @@ import {
   Save,
   RotateCcw,
   Trash2,
-  Unlink,
   Send,
   Sparkles,
   CheckCircle2,
   AlertCircle,
   HelpCircle,
-  Move,
   Link as LinkIcon,
   Check,
-  ChevronDown,
   Loader2,
   ArrowDown,
   Info,
+  Zap,
+  Clock,
+  Filter,
+  Play,
+  XCircle,
+  Tag,
+  Target,
 } from 'lucide-react';
-import { Contact, FlowNode, FlowConnection, ManualFlow, WhatsAppConnection } from '../types';
+import {
+  Contact,
+  FlowNode,
+  FlowConnection,
+  ManualFlow,
+  WhatsAppConnection,
+  FlowNodeType,
+  FlowTriggerType,
+  FlowConditionType,
+} from '../types';
 import { api } from '../services/api';
 
 interface VisualFlowEditorProps {
@@ -50,6 +63,13 @@ export const VisualFlowEditor: React.FC<VisualFlowEditorProps> = ({
   const [connectingFromId, setConnectingFromId] = useState<string | null>(null);
   const [mousePos, setMousePos] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
 
+  // Simulation / Testing state
+  const [isSimModalOpen, setIsSimModalOpen] = useState(false);
+  const [simContactId, setSimContactId] = useState('');
+  const [simMessage, setSimMessage] = useState('');
+  const [simResult, setSimResult] = useState<any | null>(null);
+  const [simulating, setSimulating] = useState(false);
+
   // Feedback notifications
   const [feedback, setFeedback] = useState<{
     type: 'success' | 'error' | 'info';
@@ -63,50 +83,17 @@ export const VisualFlowEditor: React.FC<VisualFlowEditorProps> = ({
     setLoading(true);
     try {
       const activeFlow = await api.getManualFlow();
-      if (activeFlow && activeFlow.nodes && activeFlow.nodes.length > 0) {
+      if (activeFlow && Array.isArray(activeFlow.nodes) && activeFlow.nodes.length > 0) {
         setNodes(activeFlow.nodes);
         setConnections(activeFlow.connections || []);
         setFlowName(activeFlow.name || 'Fluxo Manual Principal');
       } else {
-        // Inicializa com o exemplo solicitado: [ MAX ] ↓ [ BOM DIA, TUDO BEM? ]
-        const defaultContact = contacts[0];
-        const contactName = defaultContact ? defaultContact.name : 'Max';
-        const contactId = defaultContact ? defaultContact.id : undefined;
-        const contactPhone = defaultContact ? defaultContact.phone : '+55 11 99999-0000';
-
-        const initialNodes: FlowNode[] = [
-          {
-            id: 'node_contact_demo',
-            type: 'contact',
-            x: 180,
-            y: 80,
-            data: {
-              contactId,
-              contactName,
-              phone: contactPhone,
-            },
-          },
-          {
-            id: 'node_message_demo',
-            type: 'message',
-            x: 180,
-            y: 300,
-            data: {
-              text: 'Bom dia, tudo bem?',
-            },
-          },
-        ];
-
-        const initialConnections: FlowConnection[] = [
-          {
-            id: 'conn_demo',
-            fromNodeId: 'node_contact_demo',
-            toNodeId: 'node_message_demo',
-          },
-        ];
-
-        setNodes(initialNodes);
-        setConnections(initialConnections);
+        // DIAGRAMA INICIAL LIMPO: Começa completamente vazio se não houver fluxo salvo
+        setNodes([]);
+        setConnections([]);
+        if (activeFlow?.name) {
+          setFlowName(activeFlow.name);
+        }
       }
     } catch (err: any) {
       console.error('Erro ao carregar fluxo:', err);
@@ -114,7 +101,7 @@ export const VisualFlowEditor: React.FC<VisualFlowEditorProps> = ({
     } finally {
       setLoading(false);
     }
-  }, [contacts]);
+  }, []);
 
   useEffect(() => {
     loadFlow();
@@ -135,7 +122,7 @@ export const VisualFlowEditor: React.FC<VisualFlowEditorProps> = ({
       setSaveSuccess(true);
       setFeedback({
         type: 'success',
-        message: 'Fluxo visual salvo com sucesso! As respostas configuradas estão ativas.',
+        message: 'Fluxo visual salvo com sucesso! As respostas configuradas estão salvas.',
       });
       setTimeout(() => setSaveSuccess(false), 3000);
       if (onRefresh) onRefresh();
@@ -146,74 +133,142 @@ export const VisualFlowEditor: React.FC<VisualFlowEditorProps> = ({
     }
   };
 
-  // Adicionar Bloco de Contato
+  // 1. Adicionar Bloco de Contato (Começa SEM contato selecionado)
   const handleAddContactNode = () => {
-    const defaultContact = contacts[nodes.filter((n) => n.type === 'contact').length % Math.max(1, contacts.length)];
+    const uniqueId = `node_cnt_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const contactCount = nodes.filter((n) => n.type === 'contact').length;
     const newNode: FlowNode = {
-      id: `node_cnt_${Date.now()}`,
+      id: uniqueId,
       type: 'contact',
-      x: 100 + (nodes.length % 4) * 50,
-      y: 80 + (nodes.length % 3) * 40,
+      x: 40 + (contactCount % 3) * 50,
+      y: 40 + Math.floor(contactCount / 3) * 50,
       data: {
-        contactId: defaultContact?.id,
-        contactName: defaultContact?.name || 'Novo Contato',
-        phone: defaultContact?.phone || '',
+        contactId: undefined,
+        contactName: '',
+        phone: '',
       },
     };
     setNodes((prev) => [...prev, newNode]);
-    setFeedback({ type: 'info', message: 'Bloco de contato criado. Arraste e conecte-o a uma mensagem.' });
+    setFeedback({
+      type: 'info',
+      message: 'Bloco de contato criado. Selecione um contato na lista suspensa.',
+    });
   };
 
-  // Adicionar Bloco de Mensagem
-  const handleAddMessageNode = () => {
+  // 2. Adicionar Bloco de Gatilho (Trigger)
+  const handleAddTriggerNode = () => {
+    const uniqueId = `node_trg_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const triggerCount = nodes.filter((n) => n.type === 'trigger').length;
     const newNode: FlowNode = {
-      id: `node_msg_${Date.now()}`,
-      type: 'message',
-      x: 200 + (nodes.length % 3) * 60,
-      y: 320 + (nodes.length % 3) * 40,
+      id: uniqueId,
+      type: 'trigger',
+      x: 370 + (triggerCount % 3) * 40,
+      y: 60 + Math.floor(triggerCount / 3) * 50,
       data: {
-        text: 'Bom dia, tudo bem?',
+        triggerType: 'exact',
+        triggerValue: '',
+        triggerLabel: 'Palavra Exata',
       },
     };
     setNodes((prev) => [...prev, newNode]);
-    setFeedback({ type: 'info', message: 'Bloco de mensagem criado. Digite o texto e conecte ao contato desejado.' });
+    setFeedback({
+      type: 'info',
+      message: 'Bloco de gatilho criado. Escolha o tipo de disparo (Exata, Primeira Conversa, Contém, Qualquer).',
+    });
+  };
+
+  // 3. Adicionar Bloco de Condição (Condition)
+  const handleAddConditionNode = () => {
+    const uniqueId = `node_cnd_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const condCount = nodes.filter((n) => n.type === 'condition').length;
+    const newNode: FlowNode = {
+      id: uniqueId,
+      type: 'condition',
+      x: 420 + (condCount % 3) * 40,
+      y: 280 + Math.floor(condCount / 3) * 50,
+      data: {
+        conditionType: 'time_range',
+        timeStart: '08:00',
+        timeEnd: '18:00',
+        daysOfWeek: [1, 2, 3, 4, 5],
+      },
+    };
+    setNodes((prev) => [...prev, newNode]);
+    setFeedback({
+      type: 'info',
+      message: 'Bloco de condição criado. Configure restrições de horário, dias da semana ou agenda.',
+    });
+  };
+
+  // 4. Adicionar Bloco de Mensagem / Resposta (Começa VAZIO)
+  const handleAddMessageNode = () => {
+    const uniqueId = `node_msg_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const msgCount = nodes.filter((n) => n.type === 'message' || n.type === 'response').length;
+    const newNode: FlowNode = {
+      id: uniqueId,
+      type: 'message',
+      x: 100 + (msgCount % 3) * 50,
+      y: 360 + Math.floor(msgCount / 3) * 50,
+      data: {
+        text: '',
+        responseType: 'fixed',
+      },
+    };
+    setNodes((prev) => [...prev, newNode]);
+    setFeedback({
+      type: 'info',
+      message: 'Bloco de resposta criado. Digite o texto desejado e conecte ao fluxo.',
+    });
   };
 
   // Excluir Bloco
   const handleDeleteNode = (nodeId: string) => {
     setNodes((prev) => prev.filter((n) => n.id !== nodeId));
-    // Remove conexões vinculadas
     setConnections((prev) => prev.filter((c) => c.fromNodeId !== nodeId && c.toNodeId !== nodeId));
     setFeedback({ type: 'info', message: 'Bloco removido.' });
   };
 
-  // Conectar Bloco de Contato a Bloco de Mensagem
+  // Conexão entre blocos
   const handleConnect = (fromId: string, toId: string) => {
     if (fromId === toId) return;
 
-    const fromNode = nodes.find((n) => n.id === fromId);
-    const toNode = nodes.find((n) => n.id === toId);
+    const nodeA = nodes.find((n) => n.id === fromId);
+    const nodeB = nodes.find((n) => n.id === toId);
 
-    if (!fromNode || !toNode) return;
+    if (!nodeA || !nodeB) return;
 
-    // Permitir apenas contato -> mensagem
-    let contactNodeId = fromId;
-    let messageNodeId = toId;
+    // Regras de conexão permitidas:
+    // Hierarquia: contact -> trigger -> condition -> message/response
+    // Também permite: contact -> message (compatibilidade)
+    // contact -> condition
+    // trigger -> message
+    const orderScore: Record<string, number> = {
+      contact: 1,
+      trigger: 2,
+      condition: 3,
+      message: 4,
+      response: 4,
+    };
 
-    if (fromNode.type === 'message' && toNode.type === 'contact') {
-      contactNodeId = toId;
-      messageNodeId = fromId;
-    } else if (fromNode.type === toNode.type) {
+    if (nodeA.type === nodeB.type) {
       setFeedback({
         type: 'error',
-        message: 'Conecte um bloco de Contato [ MAX ] a um bloco de Mensagem [ RESPOSTA ].',
+        message: `Não é permitido conectar blocos do mesmo tipo (${nodeA.type} → ${nodeB.type}).`,
       });
       return;
     }
 
-    // Evita duplicatas
+    let sourceId = fromId;
+    let targetId = toId;
+
+    if (orderScore[nodeA.type] > orderScore[nodeB.type]) {
+      sourceId = toId;
+      targetId = fromId;
+    }
+
+    // Evita conexões duplicadas entre o mesmo par
     const alreadyConnected = connections.some(
-      (c) => c.fromNodeId === contactNodeId && c.toNodeId === messageNodeId
+      (c) => c.fromNodeId === sourceId && c.toNodeId === targetId
     );
 
     if (alreadyConnected) {
@@ -222,18 +277,17 @@ export const VisualFlowEditor: React.FC<VisualFlowEditorProps> = ({
     }
 
     const newConnection: FlowConnection = {
-      id: `conn_${Date.now()}`,
-      fromNodeId: contactNodeId,
-      toNodeId: messageNodeId,
+      id: `conn_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      fromNodeId: sourceId,
+      toNodeId: targetId,
     };
 
     setConnections((prev) => [...prev, newConnection]);
     setConnectingFromId(null);
 
-    const contactName = nodes.find((n) => n.id === contactNodeId)?.data.contactName || 'Contato';
     setFeedback({
       type: 'success',
-      message: `Bloco conectado! Resposta configurada com sucesso para ${contactName}.`,
+      message: `Blocos conectados com sucesso!`,
     });
   };
 
@@ -252,7 +306,6 @@ export const VisualFlowEditor: React.FC<VisualFlowEditorProps> = ({
 
   // Iniciar Arrastar Nó
   const handlePointerDown = (e: React.PointerEvent, nodeId: string) => {
-    // Não arrastar se estiver interagindo com textarea, input ou select
     const targetTag = (e.target as HTMLElement).tagName.toLowerCase();
     if (targetTag === 'input' || targetTag === 'textarea' || targetTag === 'select' || targetTag === 'button') {
       return;
@@ -281,7 +334,6 @@ export const VisualFlowEditor: React.FC<VisualFlowEditorProps> = ({
     const currentX = e.clientX - rect.left;
     const currentY = e.clientY - rect.top;
 
-    // Atualiza posição do mouse para linha de conexão temporária
     if (connectingFromId) {
       setMousePos({ x: currentX, y: currentY });
     }
@@ -309,19 +361,28 @@ export const VisualFlowEditor: React.FC<VisualFlowEditorProps> = ({
       return;
     }
 
-    // Achar contato conectado
-    const flowConn = connections.find((c) => c.toNodeId === messageNodeId);
-    if (!flowConn) {
+    // Achar contato conectado direta ou indiretamente
+    const directConn = connections.find((c) => c.toNodeId === messageNodeId);
+    if (!directConn) {
       setFeedback({
         type: 'error',
-        message: 'Conecte este bloco de mensagem a um bloco de contato antes de disparar.',
+        message: 'Conecte este bloco de mensagem a um bloco de contato ou gatilho antes de disparar.',
       });
       return;
     }
 
-    const contactNode = nodes.find((n) => n.id === flowConn.fromNodeId);
+    // Se conectado direto ao contato
+    let contactNode = nodes.find((n) => n.id === directConn.fromNodeId && n.type === 'contact');
     if (!contactNode) {
-      setFeedback({ type: 'error', message: 'Contato vinculado não encontrado.' });
+      // Procurar nó raiz de contato seguindo a cadeia
+      const parentConn = connections.find((c) => c.toNodeId === directConn.fromNodeId);
+      if (parentConn) {
+        contactNode = nodes.find((n) => n.id === parentConn.fromNodeId && n.type === 'contact');
+      }
+    }
+
+    if (!contactNode) {
+      setFeedback({ type: 'error', message: 'Contato vinculado ao fluxo não localizado.' });
       return;
     }
 
@@ -377,17 +438,43 @@ export const VisualFlowEditor: React.FC<VisualFlowEditorProps> = ({
     }
   };
 
+  // Simular teste do fluxo
+  const handleRunSimulation = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!simMessage.trim()) return;
+
+    setSimulating(true);
+    setSimResult(null);
+    try {
+      const selected = contacts.find((c) => c.id === simContactId);
+      const res = await api.evaluateFlowTest({
+        contact_id: simContactId,
+        phone: selected?.phone,
+        message: simMessage.trim(),
+      });
+      setSimResult(res);
+    } catch (err: any) {
+      setFeedback({ type: 'error', message: `Erro ao simular fluxo: ${err.message}` });
+    } finally {
+      setSimulating(false);
+    }
+  };
+
   // Helper para obter posições de portas (âncoras de conexão)
   const getNodePortPos = (node: FlowNode, portType: 'output' | 'input') => {
     const NODE_WIDTH = 300;
-    const isContact = node.type === 'contact';
-    const height = isContact ? 140 : 180;
+    const heightMap: Record<string, number> = {
+      contact: 150,
+      trigger: 170,
+      condition: 160,
+      message: 210,
+      response: 210,
+    };
+    const height = heightMap[node.type] || 170;
 
     if (portType === 'output') {
-      // Saída na parte inferior central
       return { x: node.x + NODE_WIDTH / 2, y: node.y + height };
     } else {
-      // Entrada na parte superior central
       return { x: node.x + NODE_WIDTH / 2, y: node.y };
     }
   };
@@ -406,31 +493,55 @@ export const VisualFlowEditor: React.FC<VisualFlowEditorProps> = ({
                 Editor Visual de Fluxo Manual
               </h2>
               <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-300 border border-emerald-800 font-semibold uppercase">
-                {connections.length} Resposta(s) Configurada(s)
+                {connections.length} Conexão(ões)
               </span>
             </div>
             <p className="text-xs text-slate-400">
-              Conecte blocos de contato <strong className="text-slate-300">[ MAX ]</strong> aos blocos de mensagem <strong className="text-slate-300">[ BOM DIA, TUDO BEM? ]</strong>
+              Fluxo: [ CONTATO ] → [ GATILHO ] → [ CONDIÇÃO ] → [ RESPOSTA ]
             </p>
           </div>
         </div>
 
         {/* Action Buttons */}
-        <div className="flex items-center flex-wrap gap-2.5">
+        <div className="flex items-center flex-wrap gap-2">
           <button
             onClick={handleAddContactNode}
-            className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-1.5 transition-colors border border-slate-700"
+            className="px-3 py-1.5 rounded-xl bg-indigo-950 hover:bg-indigo-900 text-indigo-200 text-xs font-semibold flex items-center gap-1.5 border border-indigo-800 transition-colors"
           >
-            <Plus className="w-4 h-4 text-emerald-400" />
-            <span>+ Bloco de Contato</span>
+            <Plus className="w-3.5 h-3.5 text-indigo-400" />
+            <span>+ Contato</span>
+          </button>
+
+          <button
+            onClick={handleAddTriggerNode}
+            className="px-3 py-1.5 rounded-xl bg-amber-950 hover:bg-amber-900 text-amber-200 text-xs font-semibold flex items-center gap-1.5 border border-amber-800 transition-colors"
+          >
+            <Plus className="w-3.5 h-3.5 text-amber-400" />
+            <span>+ Gatilho</span>
+          </button>
+
+          <button
+            onClick={handleAddConditionNode}
+            className="px-3 py-1.5 rounded-xl bg-purple-950 hover:bg-purple-900 text-purple-200 text-xs font-semibold flex items-center gap-1.5 border border-purple-800 transition-colors"
+          >
+            <Plus className="w-3.5 h-3.5 text-purple-400" />
+            <span>+ Condição</span>
           </button>
 
           <button
             onClick={handleAddMessageNode}
-            className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-1.5 transition-colors border border-slate-700"
+            className="px-3 py-1.5 rounded-xl bg-teal-950 hover:bg-teal-900 text-teal-200 text-xs font-semibold flex items-center gap-1.5 border border-teal-800 transition-colors"
           >
-            <Plus className="w-4 h-4 text-teal-400" />
-            <span>+ Bloco de Mensagem</span>
+            <Plus className="w-3.5 h-3.5 text-teal-400" />
+            <span>+ Resposta</span>
+          </button>
+
+          <button
+            onClick={() => setIsSimModalOpen(true)}
+            className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-1.5 border border-slate-700 transition-colors"
+          >
+            <Play className="w-3.5 h-3.5 text-emerald-400" />
+            <span>Testar Fluxo</span>
           </button>
 
           <button
@@ -532,7 +643,6 @@ export const VisualFlowEditor: React.FC<VisualFlowEditorProps> = ({
             const fromPos = getNodePortPos(fromNode, 'output');
             const toPos = getNodePortPos(toNode, 'input');
 
-            // Curva suave Bezier conectando [ MAX ] ↓ [ MENSAGEM ]
             const deltaY = Math.max(40, (toPos.y - fromPos.y) / 2);
             const pathData = `M ${fromPos.x} ${fromPos.y} C ${fromPos.x} ${fromPos.y + deltaY}, ${toPos.x} ${toPos.y - deltaY}, ${toPos.x} ${toPos.y}`;
 
@@ -541,7 +651,6 @@ export const VisualFlowEditor: React.FC<VisualFlowEditorProps> = ({
 
             return (
               <g key={conn.id} className="transition-all">
-                {/* Glow layer */}
                 <path
                   d={pathData}
                   fill="none"
@@ -549,27 +658,26 @@ export const VisualFlowEditor: React.FC<VisualFlowEditorProps> = ({
                   strokeWidth="8"
                   strokeOpacity="0.2"
                 />
-                {/* Main line */}
                 <path
                   d={pathData}
                   fill="none"
                   stroke="#10b981"
-                  strokeWidth="3.5"
+                  strokeWidth="3"
                   markerEnd="url(#arrow-emerald)"
                 />
 
-                {/* Interactive Connection Pill */}
+                {/* Clickable Disconnect Pill */}
                 <g
                   transform={`translate(${midX}, ${midY})`}
                   className="pointer-events-auto cursor-pointer"
                   onClick={() => handleDisconnect(conn.id)}
                 >
                   <rect
-                    x="-55"
-                    y="-14"
-                    width="110"
-                    height="28"
-                    rx="14"
+                    x="-50"
+                    y="-12"
+                    width="100"
+                    height="24"
+                    rx="12"
                     className="fill-slate-900 stroke-emerald-500 hover:fill-red-950 hover:stroke-red-500 transition-colors"
                     strokeWidth="1.5"
                   />
@@ -605,11 +713,53 @@ export const VisualFlowEditor: React.FC<VisualFlowEditorProps> = ({
           })()}
         </svg>
 
+        {/* Empty Canvas Placeholder */}
+        {nodes.length === 0 && !loading && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none z-0 text-center px-4">
+            <div className="max-w-md p-6 rounded-2xl bg-slate-900/70 border border-slate-800 shadow-2xl pointer-events-auto backdrop-blur-xs">
+              <div className="w-12 h-12 rounded-2xl bg-slate-800/80 border border-slate-700 text-emerald-400 flex items-center justify-center mx-auto mb-3 shadow-inner">
+                <LinkIcon className="w-6 h-6" />
+              </div>
+              <h3 className="text-sm font-bold text-white mb-1">Diagrama Inicial Vazio</h3>
+              <p className="text-xs text-slate-400 mb-4 leading-relaxed">
+                Nenhum bloco no diagrama. Adicione blocos de <strong>Contato</strong>, <strong>Gatilho</strong>, <strong>Condição</strong> e <strong>Resposta</strong> para montar seu fluxo.
+              </p>
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                <button
+                  onClick={handleAddContactNode}
+                  className="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center gap-1 shadow-md"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>+ Contato</span>
+                </button>
+                <button
+                  onClick={handleAddTriggerNode}
+                  className="px-3 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold flex items-center gap-1 shadow-md"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>+ Gatilho</span>
+                </button>
+                <button
+                  onClick={handleAddMessageNode}
+                  className="px-3 py-1.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-semibold flex items-center gap-1 shadow-md"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>+ Resposta</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Nodes Layer */}
         {nodes.map((node) => {
           const isDragging = draggingNodeId === node.id;
           const isConnectingSource = connectingFromId === node.id;
+
           const isContact = node.type === 'contact';
+          const isTrigger = node.type === 'trigger';
+          const isCondition = node.type === 'condition';
+          const isMessage = node.type === 'message' || node.type === 'response';
 
           // Checa conexões existentes para este nó
           const connectedOutgoing = connections.filter((c) => c.fromNodeId === node.id);
@@ -631,27 +781,55 @@ export const VisualFlowEditor: React.FC<VisualFlowEditorProps> = ({
               } ${
                 isContact
                   ? 'bg-slate-900 border-indigo-700/70 hover:border-indigo-500'
+                  : isTrigger
+                  ? 'bg-slate-900 border-amber-700/70 hover:border-amber-500'
+                  : isCondition
+                  ? 'bg-slate-900 border-purple-700/70 hover:border-purple-500'
                   : 'bg-slate-900 border-emerald-700/70 hover:border-emerald-500'
               } ${isConnectingSource ? 'ring-2 ring-sky-400' : ''}`}
             >
               {/* Node Header */}
               <div
-                className={`p-3.5 rounded-t-2xl border-b flex items-center justify-between ${
+                className={`p-3 rounded-t-2xl border-b flex items-center justify-between ${
                   isContact
-                    ? 'bg-indigo-950/50 border-indigo-900/60'
-                    : 'bg-emerald-950/50 border-emerald-900/60'
+                    ? 'bg-indigo-950/60 border-indigo-900/60'
+                    : isTrigger
+                    ? 'bg-amber-950/60 border-amber-900/60'
+                    : isCondition
+                    ? 'bg-purple-950/60 border-purple-900/60'
+                    : 'bg-emerald-950/60 border-emerald-900/60'
                 }`}
               >
                 <div className="flex items-center gap-2">
                   <div
                     className={`w-6 h-6 rounded-lg flex items-center justify-center text-white ${
-                      isContact ? 'bg-indigo-600' : 'bg-emerald-600'
+                      isContact
+                        ? 'bg-indigo-600'
+                        : isTrigger
+                        ? 'bg-amber-600'
+                        : isCondition
+                        ? 'bg-purple-600'
+                        : 'bg-emerald-600'
                     }`}
                   >
-                    {isContact ? <Users className="w-3.5 h-3.5" /> : <MessageSquare className="w-3.5 h-3.5" />}
+                    {isContact ? (
+                      <Users className="w-3.5 h-3.5" />
+                    ) : isTrigger ? (
+                      <Zap className="w-3.5 h-3.5" />
+                    ) : isCondition ? (
+                      <Filter className="w-3.5 h-3.5" />
+                    ) : (
+                      <MessageSquare className="w-3.5 h-3.5" />
+                    )}
                   </div>
                   <strong className="text-xs font-bold text-white uppercase tracking-wider">
-                    {isContact ? 'Bloco Contato' : 'Bloco Mensagem'}
+                    {isContact
+                      ? 'Bloco Contato'
+                      : isTrigger
+                      ? 'Bloco Gatilho'
+                      : isCondition
+                      ? 'Bloco Condição'
+                      : 'Bloco Resposta'}
                   </strong>
                 </div>
 
@@ -667,29 +845,48 @@ export const VisualFlowEditor: React.FC<VisualFlowEditorProps> = ({
               </div>
 
               {/* Node Body */}
-              <div className="p-4 space-y-3 text-xs">
-                {isContact ? (
-                  /* --- BLOCO DE CONTATO [ MAX ] --- */
-                  <div className="space-y-2.5">
+              <div className="p-3.5 space-y-2.5 text-xs">
+                {/* 1. BLOCO DE CONTATO */}
+                {isContact && (
+                  <div className="space-y-2">
                     <div>
                       <label className="block text-[11px] font-semibold text-slate-300 mb-1">
                         Contato Alvo:
                       </label>
                       <select
-                        value={node.data.contactId || ''}
+                        value={node.data.applyToAll ? 'ALL' : node.data.contactId || ''}
                         onChange={(e) => {
-                          const selected = contacts.find((c) => c.id === e.target.value);
-                          if (selected) {
+                          const val = e.target.value;
+                          if (val === 'ALL') {
                             updateNodeData(node.id, {
-                              contactId: selected.id,
-                              contactName: selected.name,
-                              phone: selected.phone,
+                              applyToAll: true,
+                              contactId: undefined,
+                              contactName: 'Todos os Contatos',
+                              phone: '',
                             });
+                          } else if (!val) {
+                            updateNodeData(node.id, {
+                              applyToAll: false,
+                              contactId: undefined,
+                              contactName: '',
+                              phone: '',
+                            });
+                          } else {
+                            const selected = contacts.find((c) => c.id === val);
+                            if (selected) {
+                              updateNodeData(node.id, {
+                                applyToAll: false,
+                                contactId: selected.id,
+                                contactName: selected.name,
+                                phone: selected.phone,
+                              });
+                            }
                           }
                         }}
-                        className="w-full p-2 bg-slate-950 border border-slate-800 rounded-xl text-white font-medium focus:outline-none focus:border-indigo-500"
+                        className="w-full p-2 bg-slate-950 border border-slate-800 rounded-xl text-white font-medium focus:outline-none focus:border-indigo-500 text-xs"
                       >
-                        <option value="">-- Selecione ou digite abaixo --</option>
+                        <option value="">Selecione um contato</option>
+                        <option value="ALL">🌐 Qualquer Contato (Geral)</option>
                         {contacts.map((c) => (
                           <option key={c.id} value={c.id}>
                             {c.name} ({c.phone})
@@ -698,116 +895,147 @@ export const VisualFlowEditor: React.FC<VisualFlowEditorProps> = ({
                       </select>
                     </div>
 
-                    <div className="grid grid-cols-2 gap-2">
-                      <div>
-                        <label className="block text-[10px] text-slate-400">Nome:</label>
-                        <input
-                          type="text"
-                          placeholder="Ex: Max"
-                          value={node.data.contactName || ''}
-                          onChange={(e) => updateNodeData(node.id, { contactName: e.target.value })}
-                          className="w-full px-2 py-1.5 bg-slate-950 border border-slate-800 rounded-lg text-white font-bold text-xs focus:outline-none focus:border-indigo-500"
-                        />
+                    {!node.data.applyToAll && (
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="block text-[10px] text-slate-400">Nome:</label>
+                          <input
+                            type="text"
+                            placeholder="Nome"
+                            value={node.data.contactName || ''}
+                            onChange={(e) => updateNodeData(node.id, { contactName: e.target.value })}
+                            className="w-full px-2 py-1.5 bg-slate-950 border border-slate-800 rounded-lg text-white font-bold text-xs focus:outline-none focus:border-indigo-500"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] text-slate-400">Telefone:</label>
+                          <input
+                            type="text"
+                            placeholder="+55..."
+                            value={node.data.phone || ''}
+                            onChange={(e) => updateNodeData(node.id, { phone: e.target.value })}
+                            className="w-full px-2 py-1.5 bg-slate-950 border border-slate-800 rounded-lg text-white font-mono text-[11px] focus:outline-none focus:border-indigo-500"
+                          />
+                        </div>
                       </div>
-                      <div>
-                        <label className="block text-[10px] text-slate-400">Telefone:</label>
-                        <input
-                          type="text"
-                          placeholder="+55..."
-                          value={node.data.phone || ''}
-                          onChange={(e) => updateNodeData(node.id, { phone: e.target.value })}
-                          className="w-full px-2 py-1.5 bg-slate-950 border border-slate-800 rounded-lg text-white font-mono text-[11px] focus:outline-none focus:border-indigo-500"
-                        />
-                      </div>
-                    </div>
-
-                    {/* Status Badge */}
-                    <div className="pt-1 flex items-center justify-between text-[11px]">
-                      <span className="text-slate-400">Status:</span>
-                      {connectedOutgoing.length > 0 ? (
-                        <span className="text-emerald-400 font-semibold flex items-center gap-1">
-                          <CheckCircle2 className="w-3 h-3" /> Resposta Configurada
-                        </span>
-                      ) : (
-                        <span className="text-amber-400 font-medium">Aguardando conexão ↓</span>
-                      )}
-                    </div>
-
-                    {/* Quick Connect Action */}
-                    <div className="pt-1">
-                      <button
-                        onClick={() => {
-                          if (connectingFromId === node.id) {
-                            setConnectingFromId(null);
-                          } else {
-                            setConnectingFromId(node.id);
-                            setFeedback({
-                              type: 'info',
-                              message: 'Clique agora no Bloco de Mensagem que deseja conectar.',
-                            });
-                          }
-                        }}
-                        className={`w-full py-1.5 rounded-lg text-[11px] font-semibold flex items-center justify-center gap-1.5 border transition-all ${
-                          connectingFromId === node.id
-                            ? 'bg-sky-600 text-white border-sky-400 animate-pulse'
-                            : 'bg-indigo-950/60 hover:bg-indigo-900 text-indigo-300 border-indigo-800'
-                        }`}
-                      >
-                        <ArrowDown className="w-3.5 h-3.5" />
-                        <span>{connectingFromId === node.id ? 'Cancelando...' : 'Conectar à Mensagem ↓'}</span>
-                      </button>
-                    </div>
+                    )}
                   </div>
-                ) : (
-                  /* --- BLOCO DE MENSAGEM [ BOM DIA, TUDO BEM? ] --- */
-                  <div className="space-y-2.5">
-                    {/* Visual clarity indicator: When connected to contact */}
-                    {connectedIncoming.length > 0 ? (
-                      <div className="p-2 rounded-xl bg-emerald-950/80 border border-emerald-700/80 text-[11px] space-y-1">
-                        <div className="flex items-center justify-between font-bold text-emerald-300">
-                          <span className="flex items-center gap-1">
-                            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                            Resposta configurada para:
-                          </span>
-                          <button
-                            onClick={() => handleDisconnect(connectedIncoming[0].id)}
-                            className="text-[10px] text-red-300 hover:text-red-100 underline"
-                          >
-                            Desconectar
-                          </button>
-                        </div>
-                        <div className="font-semibold text-white pl-4">
-                          {nodes.find((n) => n.id === connectedIncoming[0].fromNodeId)?.data.contactName || 'Contato Vinculado'}
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="p-2 rounded-xl bg-slate-950 border border-slate-800 text-[11px] text-slate-400 flex items-center justify-between">
-                        <span>Nenhum contato conectado</span>
-                        {connectingFromId && (
-                          <button
-                            onClick={() => handleConnect(connectingFromId, node.id)}
-                            className="px-2 py-0.5 rounded bg-sky-600 hover:bg-sky-500 text-white font-bold text-[10px]"
-                          >
-                            Conectar aqui
-                          </button>
-                        )}
+                )}
+
+                {/* 2. BLOCO DE GATILHO (TRIGGER) */}
+                {isTrigger && (
+                  <div className="space-y-2">
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                        Tipo de Gatilho:
+                      </label>
+                      <select
+                        value={node.data.triggerType || 'exact'}
+                        onChange={(e) =>
+                          updateNodeData(node.id, {
+                            triggerType: e.target.value as FlowTriggerType,
+                          })
+                        }
+                        className="w-full p-2 bg-slate-950 border border-slate-800 rounded-xl text-white font-medium focus:outline-none focus:border-amber-500 text-xs"
+                      >
+                        <option value="exact">🎯 Palavra Exata (Prioridade Máxima)</option>
+                        <option value="first_message">💬 Primeira Conversa (Novo Contato)</option>
+                        <option value="contains">🔍 Contém Palavra(s)-chave</option>
+                        <option value="any">⚡ Qualquer Mensagem</option>
+                      </select>
+                    </div>
+
+                    {(node.data.triggerType === 'exact' || node.data.triggerType === 'contains') && (
+                      <div>
+                        <label className="block text-[10px] text-slate-400 mb-1">
+                          {node.data.triggerType === 'exact'
+                            ? 'Palavra ou frase exata:'
+                            : 'Palavras-chave (separadas por vírgula):'}
+                        </label>
+                        <input
+                          type="text"
+                          placeholder={
+                            node.data.triggerType === 'exact'
+                              ? 'Ex: preco, orcamento, pix'
+                              : 'Ex: preco, valor, quanto custa'
+                          }
+                          value={node.data.triggerValue || ''}
+                          onChange={(e) => updateNodeData(node.id, { triggerValue: e.target.value })}
+                          className="w-full px-2.5 py-1.5 bg-slate-950 border border-slate-800 rounded-lg text-white font-mono text-xs focus:outline-none focus:border-amber-500"
+                        />
                       </div>
                     )}
 
+                    {node.data.triggerType === 'first_message' && (
+                      <p className="text-[10px] text-amber-300/80 bg-amber-950/40 p-2 rounded-lg border border-amber-800/40">
+                        Dispara apenas na primeira mensagem recebida de um contato novo.
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {/* 3. BLOCO DE CONDIÇÃO (CONDITION) */}
+                {isCondition && (
+                  <div className="space-y-2">
                     <div>
                       <label className="block text-[11px] font-semibold text-slate-300 mb-1">
-                        Texto da Mensagem:
+                        Regra de Condição:
+                      </label>
+                      <select
+                        value={node.data.conditionType || 'time_range'}
+                        onChange={(e) =>
+                          updateNodeData(node.id, {
+                            conditionType: e.target.value as FlowConditionType,
+                          })
+                        }
+                        className="w-full p-2 bg-slate-950 border border-slate-800 rounded-xl text-white font-medium focus:outline-none focus:border-purple-500 text-xs"
+                      >
+                        <option value="time_range">⏰ Horário Específico</option>
+                        <option value="days_of_week">📅 Dias da Semana</option>
+                        <option value="only_saved">📖 Apenas Contatos Salvos na Agenda</option>
+                        <option value="not_blocked">🛡️ Apenas Contatos Não Bloqueados</option>
+                      </select>
+                    </div>
+
+                    {node.data.conditionType === 'time_range' && (
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="block text-[10px] text-slate-400">Início:</label>
+                          <input
+                            type="time"
+                            value={node.data.timeStart || '08:00'}
+                            onChange={(e) => updateNodeData(node.id, { timeStart: e.target.value })}
+                            className="w-full px-2 py-1 bg-slate-950 border border-slate-800 rounded-lg text-white font-mono text-xs"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] text-slate-400">Fim:</label>
+                          <input
+                            type="time"
+                            value={node.data.timeEnd || '18:00'}
+                            onChange={(e) => updateNodeData(node.id, { timeEnd: e.target.value })}
+                            className="w-full px-2 py-1 bg-slate-950 border border-slate-800 rounded-lg text-white font-mono text-xs"
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* 4. BLOCO DE RESPOSTA (MESSAGE / RESPONSE) */}
+                {isMessage && (
+                  <div className="space-y-2">
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                        Texto da Resposta Automática:
                       </label>
                       <textarea
                         rows={3}
-                        placeholder="Digite o texto exato da mensagem..."
+                        placeholder="Digite o texto exato da resposta..."
                         value={node.data.text || ''}
                         onChange={(e) => updateNodeData(node.id, { text: e.target.value })}
                         className="w-full p-2 bg-slate-950 border border-slate-800 rounded-xl text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500 text-xs font-sans leading-relaxed"
                       />
-                      <span className="text-[10px] text-slate-500 block mt-0.5">
-                        * O texto será transmitido exatamente como digitado.
-                      </span>
                     </div>
 
                     {/* Disparar Envio Manual Direto */}
@@ -817,10 +1045,10 @@ export const VisualFlowEditor: React.FC<VisualFlowEditorProps> = ({
                         disabled={sendingNodeId === node.id || connectedIncoming.length === 0}
                         title={
                           connectedIncoming.length === 0
-                            ? 'Conecte este bloco a um contato antes de disparar'
+                            ? 'Conecte este bloco antes de disparar'
                             : 'Enviar esta mensagem configurada agora via WhatsApp Web'
                         }
-                        className={`w-full py-2 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all ${
+                        className={`w-full py-1.5 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all ${
                           connectedIncoming.length === 0
                             ? 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700'
                             : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-md shadow-emerald-950'
@@ -831,18 +1059,60 @@ export const VisualFlowEditor: React.FC<VisualFlowEditorProps> = ({
                         ) : (
                           <Send className="w-3.5 h-3.5" />
                         )}
-                        <span>Disparar Mensagem Agora</span>
+                        <span>Disparar Agora</span>
                       </button>
                     </div>
                   </div>
                 )}
+
+                {/* Conexão rápida / Botão de fluxo */}
+                <div className="pt-1">
+                  <button
+                    onClick={() => {
+                      if (connectingFromId === node.id) {
+                        setConnectingFromId(null);
+                      } else {
+                        setConnectingFromId(node.id);
+                        setFeedback({
+                          type: 'info',
+                          message: 'Clique agora no próximo bloco para conectar.',
+                        });
+                      }
+                    }}
+                    className={`w-full py-1 rounded-lg text-[11px] font-semibold flex items-center justify-center gap-1 border transition-all ${
+                      connectingFromId === node.id
+                        ? 'bg-sky-600 text-white border-sky-400 animate-pulse'
+                        : 'bg-slate-950 hover:bg-slate-800 text-slate-300 border-slate-700'
+                    }`}
+                  >
+                    <ArrowDown className="w-3 h-3" />
+                    <span>{connectingFromId === node.id ? 'Cancelando...' : 'Conectar ↓'}</span>
+                  </button>
+                </div>
               </div>
 
-              {/* Connector Ports (Anchors) */}
-              {/* Output port on Contact Node */}
-              {isContact && (
+              {/* Portas de Conexão */}
+              {/* Porta Superior (Entrada: exceto para Contato raiz) */}
+              {!isContact && (
                 <div
-                  title="Porta de Saída: Conecte à Mensagem"
+                  title="Entrada: Conecte o bloco anterior aqui"
+                  onClick={() => {
+                    if (connectingFromId) {
+                      handleConnect(connectingFromId, node.id);
+                    }
+                  }}
+                  className={`absolute -top-3 left-1/2 -translate-x-1/2 w-6 h-6 rounded-full bg-slate-900 border-2 ${
+                    connectingFromId ? 'border-sky-400 bg-sky-950 animate-bounce' : 'border-slate-500'
+                  } hover:scale-125 transition-all cursor-pointer flex items-center justify-center shadow-md`}
+                >
+                  <div className="w-2 h-2 rounded-full bg-slate-300" />
+                </div>
+              )}
+
+              {/* Porta Inferior (Saída: exceto para Mensagem final) */}
+              {!isMessage && (
+                <div
+                  title="Saída: Conecte ao próximo bloco"
                   onClick={() => {
                     if (connectingFromId === node.id) {
                       setConnectingFromId(null);
@@ -850,24 +1120,7 @@ export const VisualFlowEditor: React.FC<VisualFlowEditorProps> = ({
                       setConnectingFromId(node.id);
                     }
                   }}
-                  className="absolute -bottom-3 left-1/2 -translate-x-1/2 w-6 h-6 rounded-full bg-slate-900 border-2 border-indigo-400 hover:border-emerald-400 hover:bg-emerald-500 hover:scale-125 transition-all cursor-pointer flex items-center justify-center shadow-md"
-                >
-                  <div className="w-2 h-2 rounded-full bg-indigo-300" />
-                </div>
-              )}
-
-              {/* Input port on Message Node */}
-              {!isContact && (
-                <div
-                  title="Porta de Entrada: Conecte ao Contato"
-                  onClick={() => {
-                    if (connectingFromId) {
-                      handleConnect(connectingFromId, node.id);
-                    }
-                  }}
-                  className={`absolute -top-3 left-1/2 -translate-x-1/2 w-6 h-6 rounded-full bg-slate-900 border-2 ${
-                    connectingFromId ? 'border-sky-400 bg-sky-950 animate-bounce' : 'border-emerald-400'
-                  } hover:scale-125 transition-all cursor-pointer flex items-center justify-center shadow-md`}
+                  className="absolute -bottom-3 left-1/2 -translate-x-1/2 w-6 h-6 rounded-full bg-slate-900 border-2 border-emerald-400 hover:border-emerald-300 hover:scale-125 transition-all cursor-pointer flex items-center justify-center shadow-md"
                 >
                   <div className="w-2 h-2 rounded-full bg-emerald-400" />
                 </div>
@@ -882,7 +1135,7 @@ export const VisualFlowEditor: React.FC<VisualFlowEditorProps> = ({
         <div className="flex items-center gap-2">
           <HelpCircle className="w-4 h-4 text-emerald-400" />
           <span>
-            <strong>Dica:</strong> Arraste os blocos livremente pelo painel. Conecte o bloco de contato ao bloco de mensagem para deixar a resposta configurada e pronta para envio.
+            <strong>Estrutura:</strong> [ Contato ] → [ Gatilho: Exata / Primeira / Contém ] → [ Condição ] → [ Resposta ]. Proteção anti-loop ativa.
           </span>
         </div>
         <div className="flex items-center gap-4 text-slate-400">
@@ -891,6 +1144,111 @@ export const VisualFlowEditor: React.FC<VisualFlowEditorProps> = ({
           <span>{connections.length} conexão(ões) ativas</span>
         </div>
       </div>
+
+      {/* Modal de Simulação / Teste do Fluxo */}
+      {isSimModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-lg w-full p-6 shadow-2xl space-y-5">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2">
+                <Play className="w-5 h-5 text-emerald-400" />
+                <h3 className="text-base font-bold text-white">Simular Execução do Fluxo</h3>
+              </div>
+              <button
+                onClick={() => setIsSimModalOpen(false)}
+                className="text-slate-400 hover:text-white text-xs px-2 py-1 rounded"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleRunSimulation} className="space-y-4 text-xs">
+              <div>
+                <label className="block font-semibold text-slate-300 mb-1">Contato Simulador:</label>
+                <select
+                  value={simContactId}
+                  onChange={(e) => setSimContactId(e.target.value)}
+                  className="w-full p-2 bg-slate-950 border border-slate-800 rounded-xl text-white font-medium focus:outline-none focus:border-emerald-500"
+                >
+                  <option value="">Contato Padrão / Simulado</option>
+                  {contacts.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name} ({c.phone})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block font-semibold text-slate-300 mb-1">
+                  Mensagem recebida do cliente:
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Ex: preco, ola, quanto custa..."
+                  value={simMessage}
+                  onChange={(e) => setSimMessage(e.target.value)}
+                  className="w-full p-2.5 bg-slate-950 border border-slate-800 rounded-xl text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500 font-mono text-xs"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setIsSimModalOpen(false)}
+                  className="px-4 py-2 rounded-xl bg-slate-800 text-slate-300 font-semibold"
+                >
+                  Fechar
+                </button>
+                <button
+                  type="submit"
+                  disabled={simulating || !simMessage.trim()}
+                  className="px-5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold flex items-center gap-1.5 shadow-md shadow-emerald-950"
+                >
+                  {simulating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
+                  <span>Avaliar Fluxo</span>
+                </button>
+              </div>
+            </form>
+
+            {simResult && (
+              <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-2 text-xs">
+                <div className="flex items-center gap-2 font-bold">
+                  {simResult.matched ? (
+                    <span className="text-emerald-400 flex items-center gap-1.5">
+                      <CheckCircle2 className="w-4 h-4" /> Gatilho Acionado com Sucesso!
+                    </span>
+                  ) : (
+                    <span className="text-amber-400 flex items-center gap-1.5">
+                      <XCircle className="w-4 h-4" /> Nenhum Gatilho Correspondeu
+                    </span>
+                  )}
+                </div>
+
+                {simResult.matched ? (
+                  <div className="space-y-1.5 pt-1">
+                    <p className="text-slate-300">
+                      <strong>Gatilho:</strong>{' '}
+                      <span className="px-2 py-0.5 rounded bg-amber-950 text-amber-300 border border-amber-800 font-mono text-[11px]">
+                        {simResult.triggerType} {simResult.triggerValue ? `("${simResult.triggerValue}")` : ''}
+                      </span>
+                    </p>
+                    <div className="p-3 rounded-xl bg-emerald-950/60 border border-emerald-800 text-white font-sans">
+                      <strong className="block text-emerald-300 text-[11px] mb-1">Resposta que seria enviada:</strong>
+                      "{simResult.replyText}"
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-slate-400 text-[11px]">
+                    Motivo: {simResult.reason || 'Nenhuma regra ou palavra-chave coincidiu com a mensagem digitada.'}
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 };

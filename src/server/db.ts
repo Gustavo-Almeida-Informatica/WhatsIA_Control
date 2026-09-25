@@ -291,14 +291,18 @@ class Database {
     return { ...this.data.connection };
   }
 
-  getContacts(options?: { onlySaved?: boolean; search?: string }): Contact[] {
+  getContacts(options?: { onlySaved?: boolean; search?: string; all?: boolean }): Contact[] {
     let list = this.data.contacts.filter((c) => {
       // 1. Não considerar grupos como contatos
       if (c.type === 'group' || isGroupId(c.whatsapp_id)) return false;
-      // 2. Não considerar IDs técnicos como contatos
+      // 2. Não considerar IDs técnicos como contatos (@lid, broadcast, newsletter, status, etc.)
       if (isTechnicalId(c.whatsapp_id)) return false;
-      // 3. Se solicitado apenas contatos salvos no celular (agenda)
-      if (options?.onlySaved && c.is_my_contact === false) return false;
+      // 3. Somente contatos reais da agenda por padrão (~392):
+      // A lista de CONTATOS deve mostrar apenas os contatos da agenda (is_my_contact === true).
+      // Apenas quando explicitamente solicitado all: true ou onlySaved: false, inclui participantes de conversa não salvos.
+      if (options?.all !== true && options?.onlySaved !== false) {
+        if (!c.is_my_contact) return false;
+      }
       return true;
     });
 
@@ -313,6 +317,11 @@ class Database {
     }
 
     return list;
+  }
+
+  getContactByWhatsappId(whatsappId: string): Contact | undefined {
+    if (!whatsappId) return undefined;
+    return this.data.contacts.find((c) => c.whatsapp_id === whatsappId && c.type !== 'group' && !isGroupId(c.whatsapp_id));
   }
 
   getGroups(): GroupChat[] {
@@ -603,11 +612,20 @@ class Database {
           ? contactData.name
           : existing.name;
 
+      const hasConv =
+        contactData.has_conversation !== undefined
+          ? contactData.has_conversation
+          : contactData.possui_conversa !== undefined
+          ? contactData.possui_conversa
+          : existing.has_conversation ?? false;
+
       Object.assign(existing, {
         ...contactData,
         name: bestName,
         type: 'individual',
         is_my_contact: contactData.is_my_contact ?? existing.is_my_contact ?? false,
+        has_conversation: hasConv,
+        possui_conversa: hasConv,
         updated_at: new Date().toISOString(),
       });
       this.persist();
@@ -617,6 +635,9 @@ class Database {
     const formattedPhone = contactData.phone.startsWith('+')
       ? contactData.phone
       : `+${cleanNum}`;
+
+    const isSaved = Boolean(contactData.is_my_contact);
+    const hasConv = Boolean(contactData.has_conversation || contactData.possui_conversa);
 
     const newContact: Contact = {
       id: contactData.id || `cnt_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
@@ -631,7 +652,9 @@ class Database {
       mode: 'manual', // Modo exclusivo: manual com fluxos visuais
       auto_reply_message: contactData.auto_reply_message || '',
       allow_ai: contactData.allow_ai || false,
-      is_my_contact: contactData.is_my_contact ?? false,
+      is_my_contact: isSaved,
+      has_conversation: hasConv,
+      possui_conversa: hasConv,
       tags: contactData.tags || [],
       unread_count: 0,
       created_at: new Date().toISOString(),
@@ -652,6 +675,7 @@ class Database {
       auto_reply_message?: string;
       blocked?: boolean;
       name?: string;
+      is_my_contact?: boolean;
     }
   ): Contact | null {
     const contact = this.data.contacts.find((c) => c.id === contactId);
@@ -662,7 +686,8 @@ class Database {
     if (settings.allow_ai !== undefined) contact.allow_ai = settings.allow_ai;
     if (settings.auto_reply_message !== undefined) contact.auto_reply_message = settings.auto_reply_message;
     if (settings.blocked !== undefined) contact.blocked = settings.blocked;
-    if (settings.name !== undefined) contact.name = settings.name;
+    if (settings.name !== undefined && settings.name.trim().length > 0) contact.name = settings.name.trim();
+    if (settings.is_my_contact !== undefined) contact.is_my_contact = settings.is_my_contact;
 
     contact.updated_at = new Date().toISOString();
     this.persist();

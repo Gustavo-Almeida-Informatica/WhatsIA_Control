@@ -130,9 +130,29 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+  evaluateFlowTest: (data: { contact_id?: string; phone?: string; message: string }) =>
+    request<{
+      matched: boolean;
+      replyText?: string;
+      triggerType?: string;
+      triggerValue?: string;
+      reason?: string;
+    }>('/api/flows/evaluate-test', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
 
   // Contacts
-  getContacts: () => request<Contact[]>('/api/contacts'),
+  getContacts: (options?: { only_saved?: boolean; all?: boolean; search?: string; page?: number; limit?: number }) => {
+    const params = new URLSearchParams();
+    if (options?.only_saved !== undefined) params.append('only_saved', String(options.only_saved));
+    if (options?.all !== undefined) params.append('all', String(options.all));
+    if (options?.search) params.append('search', options.search);
+    if (options?.page) params.append('page', String(options.page));
+    if (options?.limit) params.append('limit', String(options.limit));
+    const qs = params.toString();
+    return request<any>(`/api/contacts${qs ? `?${qs}` : ''}`);
+  },
   saveContact: (data: Partial<Contact> & { name: string; phone: string }) =>
     request<Contact>('/api/contacts', {
       method: 'POST',
@@ -150,6 +170,7 @@ export const api = {
     auto_reply_message?: string;
     blocked?: boolean;
     name?: string;
+    is_my_contact?: boolean;
   }) =>
     request<{ success: boolean; message: string; contact: Contact }>('/api/contact-settings', {
       method: 'POST',

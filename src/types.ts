@@ -29,25 +29,49 @@ export interface WhatsAppConnection {
 
 export type ContactType = 'individual' | 'group' | 'business';
 
-export type FlowNodeType = 'contact' | 'message';
+export type FlowNodeType = 'contact' | 'trigger' | 'condition' | 'message' | 'response';
+
+export type FlowTriggerType = 'exact' | 'first_message' | 'contains' | 'any';
+
+export type FlowConditionType = 'time_range' | 'days_of_week' | 'not_blocked' | 'only_saved';
+
+export interface FlowNodeData {
+  // Bloco de Contato
+  contactId?: string;
+  contactName?: string;
+  phone?: string;
+  applyToAll?: boolean;
+
+  // Bloco de Gatilho (Trigger)
+  triggerType?: FlowTriggerType;
+  triggerValue?: string;
+  triggerLabel?: string;
+
+  // Bloco de Condição (Condition)
+  conditionType?: FlowConditionType;
+  timeStart?: string; // HH:mm
+  timeEnd?: string;   // HH:mm
+  daysOfWeek?: number[]; // [1, 2, 3, 4, 5]
+
+  // Bloco de Mensagem / Resposta (Response)
+  text?: string;
+  responseType?: 'fixed' | 'ai';
+}
 
 export interface FlowNode {
   id: string;
   type: FlowNodeType;
   x: number;
   y: number;
-  data: {
-    contactId?: string;
-    contactName?: string;
-    phone?: string;
-    text?: string;
-  };
+  data: FlowNodeData;
 }
 
 export interface FlowConnection {
   id: string;
-  fromNodeId: string; // Contact node id
-  toNodeId: string;   // Message node id
+  fromNodeId: string;
+  toNodeId: string;
+  fromPort?: 'output';
+  toPort?: 'input';
 }
 
 export interface ManualFlow {
@@ -77,7 +101,9 @@ export interface Contact {
   last_message?: string;
   last_message_time?: string;
   last_interaction_at?: string;
-  is_my_contact?: boolean; // Contato salvo na agenda do celular
+  is_my_contact?: boolean; // Contato salvo na agenda do celular (~392)
+  has_conversation?: boolean; // Possui conversa/chat real no WhatsApp (~552)
+  possui_conversa?: boolean; // Alias em português
   created_at: string;
   updated_at: string;
 }

@@ -35,7 +35,7 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
-  const [filterTab, setFilterTab] = useState<'all' | 'saved'>('all');
+  const [filterTab, setFilterTab] = useState<'all' | 'saved'>('saved');
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [syncing, setSyncing] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
@@ -47,8 +47,10 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
 
-  // Modal de configuração por contato
+  // Modal de configuração e perfil por contato
   const [activeContact, setActiveContact] = useState<Contact | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editIsSaved, setEditIsSaved] = useState(false);
   const mode = 'manual';
   const [automationEnabled, setAutomationEnabled] = useState(true);
   const [allowAi, setAllowAi] = useState(false);
@@ -141,6 +143,8 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
   // Abrir configuração de um contato
   const handleOpenConfig = (contact: Contact) => {
     setActiveContact(contact);
+    setEditName(contact.name || '');
+    setEditIsSaved(Boolean(contact.is_my_contact));
     setAutomationEnabled(contact.automation_enabled ?? false);
     setAllowAi(contact.allow_ai || false);
     setAutoReplyMessage(contact.auto_reply_message || '');
@@ -156,6 +160,8 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
     try {
       await api.updateContactSettings({
         contact_id: activeContact.id,
+        name: editName.trim() || activeContact.name,
+        is_my_contact: editIsSaved,
         mode: 'manual',
         automation_enabled: automationEnabled,
         allow_ai: allowAi,
@@ -164,7 +170,7 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
 
       setFeedback({
         type: 'success',
-        message: `Configurações salvas para ${activeContact.name}!`,
+        message: `Perfil e configurações salvas para ${editName.trim() || activeContact.name}!`,
       });
       setActiveContact(null);
       onRefresh();
@@ -316,36 +322,36 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
         <div className="flex items-center gap-2 bg-slate-900 p-1.5 rounded-2xl border border-slate-800 w-fit">
           <button
             onClick={() => {
-              setFilterTab('all');
-              setCurrentPage(1);
-            }}
-            className={`px-3 py-1.5 rounded-xl font-medium transition-all ${
-              filterTab === 'all'
-                ? 'bg-emerald-600 text-white font-semibold shadow-md'
-                : 'text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            Todos os Contatos Reais ({realContacts.length})
-          </button>
-
-          <button
-            onClick={() => {
               setFilterTab('saved');
               setCurrentPage(1);
             }}
-            className={`px-3 py-1.5 rounded-xl font-medium transition-all flex items-center gap-1.5 ${
+            className={`px-3.5 py-1.5 rounded-xl font-medium transition-all flex items-center gap-1.5 ${
               filterTab === 'saved'
                 ? 'bg-emerald-600 text-white font-semibold shadow-md'
                 : 'text-slate-400 hover:text-slate-200'
             }`}
           >
             <BookUser className="w-3.5 h-3.5" />
-            <span>Salvos no Celular ({savedCount})</span>
+            <span>Agenda do Celular ({savedCount})</span>
+          </button>
+
+          <button
+            onClick={() => {
+              setFilterTab('all');
+              setCurrentPage(1);
+            }}
+            className={`px-3.5 py-1.5 rounded-xl font-medium transition-all ${
+              filterTab === 'all'
+                ? 'bg-emerald-600 text-white font-semibold shadow-md'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <span>Todas as Conversas ({realContacts.length})</span>
           </button>
         </div>
 
         <span className="text-slate-400 text-[11px]">
-          Mostrando {filteredContacts.length} contato(s) identificado(s)
+          Mostrando {filteredContacts.length} contato(s) exibido(s)
         </span>
       </div>
 
@@ -566,7 +572,46 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
               <p className="text-xs font-mono text-slate-400 mt-0.5">{activeContact.phone}</p>
             </div>
 
-            <form onSubmit={handleSaveConfig} className="space-y-5 text-xs">
+            <form onSubmit={handleSaveConfig} className="space-y-4 text-xs">
+              {/* Nome do Contato (Perfil Editável) */}
+              <div>
+                <label className="block font-semibold text-slate-300 mb-1">
+                  Nome do Contato (Perfil):
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  placeholder="Nome do contato na agenda..."
+                  className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-white font-medium focus:outline-none focus:border-emerald-500"
+                />
+              </div>
+
+              {/* Status de Agenda do Celular */}
+              <div className="p-3 bg-slate-950 rounded-xl border border-slate-800 flex items-center justify-between">
+                <div>
+                  <strong className="block text-slate-200 font-semibold flex items-center gap-1.5">
+                    <BookUser className="w-3.5 h-3.5 text-emerald-400" />
+                    Contato Salvo na Agenda do Celular:
+                  </strong>
+                  <span className="text-[11px] text-slate-400">
+                    Contatos salvos compõem a agenda oficial (~392 contatos).
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setEditIsSaved(!editIsSaved)}
+                  className={`px-3 py-1 rounded-full font-bold text-[11px] border transition-colors ${
+                    editIsSaved
+                      ? 'bg-emerald-950 text-emerald-300 border-emerald-800'
+                      : 'bg-slate-800 text-slate-400 border-slate-700'
+                  }`}
+                >
+                  {editIsSaved ? '✓ Salvo na Agenda' : 'Apenas Conversa'}
+                </button>
+              </div>
+
               {/* Modo: Manual (Padrão e Exclusivo) */}
               <div className="p-3.5 bg-slate-950 rounded-xl border border-slate-800 flex items-center justify-between">
                 <div>

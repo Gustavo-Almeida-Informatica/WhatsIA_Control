@@ -51,15 +51,15 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     setFeedback(null);
 
     try {
-      // 1. Update user info if changed
-      if (user && (user.name !== userName || user.email !== userEmail)) {
+      // 1. Atualizar informações de perfil do usuário
+      if (userName.trim()) {
         await api.updateUser({
           name: userName.trim(),
           email: userEmail.trim(),
         });
       }
 
-      // 2. Update AI settings
+      // 2. Atualizar configurações de IA
       await api.updateAISettings({
         enabled: useAI,
       });

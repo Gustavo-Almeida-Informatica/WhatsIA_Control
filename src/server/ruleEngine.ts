@@ -145,6 +145,202 @@ export function checkConditionsMatch(rule: Rule, incomingText: string, contact: 
   return { matched: true, reason: 'Todas as condições atendidas' };
 }
 
+export interface FlowEvaluationResult {
+  matched: boolean;
+  replyText?: string;
+  triggerType?: string;
+  triggerValue?: string;
+  conditionMatched?: boolean;
+  contactNodeId?: string;
+  messageNodeId?: string;
+  reason?: string;
+}
+
+export function evaluateVisualFlow(
+  contact: Contact,
+  incomingText: string,
+  existingConversationMessages: Message[] = []
+): FlowEvaluationResult {
+  const manualFlow = db.getManualFlow();
+  const allNodes = manualFlow.nodes || [];
+  const allConnections = manualFlow.connections || [];
+
+  if (allNodes.length === 0) {
+    return { matched: false, reason: 'Nenhum fluxo visual configurado' };
+  }
+
+  // 1. Achar nós de contato que correspondam ao remetente
+  const contactNodes = allNodes.filter((n) => n.type === 'contact');
+  const matchedContactNodes = contactNodes.filter((node) => {
+    if (node.data.applyToAll) return true;
+    if (node.data.contactId && node.data.contactId === contact.id) return true;
+    if (node.data.phone && contact.phone && contact.phone.replace(/\D/g, '').includes(node.data.phone.replace(/\D/g, ''))) return true;
+    if (node.data.contactName && normalizeText(node.data.contactName) === normalizeText(contact.name)) return true;
+    return false;
+  });
+
+  if (matchedContactNodes.length === 0) {
+    return { matched: false, reason: 'Nenhum bloco de contato corresponde a este remetente' };
+  }
+
+  const normIncoming = normalizeText(incomingText);
+  const priorContactMsgs = existingConversationMessages.filter((m) => m.sender === 'contact');
+  const hasPriorInteraction = existingConversationMessages.some((m) => m.sender === 'bot' || m.sender === 'user');
+  const isFirstMessage = !hasPriorInteraction && priorContactMsgs.length <= 1;
+
+  interface Candidate {
+    priority: number; // 1 = exact, 2 = first_message, 3 = contains, 4 = any
+    replyText: string;
+    triggerType: string;
+    triggerValue: string;
+    contactNodeId: string;
+    messageNodeId: string;
+  }
+
+  const candidates: Candidate[] = [];
+
+  for (const cNode of matchedContactNodes) {
+    // Achar conexões que saem do contato
+    const outgoing = allConnections.filter((c) => c.fromNodeId === cNode.id);
+
+    for (const conn of outgoing) {
+      const targetNode = allNodes.find((n) => n.id === conn.toNodeId);
+      if (!targetNode) continue;
+
+      // CASO A: Contato conectado a GATILHO (Trigger)
+      if (targetNode.type === 'trigger') {
+        const triggerType = targetNode.data.triggerType || 'any';
+        const triggerVal = targetNode.data.triggerValue || '';
+        const normTriggerVal = normalizeText(triggerVal);
+
+        let triggerMatched = false;
+        let priority = 4;
+
+        if (triggerType === 'exact') {
+          triggerMatched = normIncoming === normTriggerVal;
+          priority = 1;
+        } else if (triggerType === 'first_message') {
+          triggerMatched = isFirstMessage;
+          priority = 2;
+        } else if (triggerType === 'contains') {
+          if (!normTriggerVal) {
+            triggerMatched = true;
+          } else {
+            const keywords = normTriggerVal.split(',').map((k) => k.trim()).filter(Boolean);
+            triggerMatched = keywords.some((kw) => normIncoming.includes(kw));
+          }
+          priority = 3;
+        } else if (triggerType === 'any') {
+          triggerMatched = true;
+          priority = 4;
+        }
+
+        if (!triggerMatched) continue;
+
+        // Se o gatilho deu match, buscar próximos nós conectados
+        const triggerOutgoing = allConnections.filter((c) => c.fromNodeId === targetNode.id);
+
+        for (const tConn of triggerOutgoing) {
+          const nextNode = allNodes.find((n) => n.id === tConn.toNodeId);
+          if (!nextNode) continue;
+
+          // Se for CONDIÇÃO:
+          if (nextNode.type === 'condition') {
+            const condType = nextNode.data.conditionType || 'not_blocked';
+            let condPassed = true;
+
+            if (condType === 'time_range' && nextNode.data.timeStart && nextNode.data.timeEnd) {
+              const now = new Date();
+              const curMins = now.getHours() * 60 + now.getMinutes();
+              const [sH, sM] = nextNode.data.timeStart.split(':').map(Number);
+              const [eH, eM] = nextNode.data.timeEnd.split(':').map(Number);
+              const startM = sH * 60 + (sM || 0);
+              const endM = eH * 60 + (eM || 0);
+
+              if (startM <= endM) {
+                condPassed = curMins >= startM && curMins <= endM;
+              } else {
+                condPassed = curMins >= startM || curMins <= endM;
+              }
+            } else if (condType === 'days_of_week' && nextNode.data.daysOfWeek && nextNode.data.daysOfWeek.length > 0) {
+              const curDay = new Date().getDay();
+              condPassed = nextNode.data.daysOfWeek.includes(curDay);
+            } else if (condType === 'only_saved') {
+              condPassed = Boolean(contact.is_my_contact);
+            } else if (condType === 'not_blocked') {
+              condPassed = !contact.blocked;
+            }
+
+            if (!condPassed) continue;
+
+            // Seguir para a resposta conectada à condição
+            const condOutgoing = allConnections.filter((c) => c.fromNodeId === nextNode.id);
+            for (const cConn of condOutgoing) {
+              const respNode = allNodes.find((n) => n.id === cConn.toNodeId && (n.type === 'message' || n.type === 'response'));
+              if (respNode && respNode.data.text && respNode.data.text.trim()) {
+                candidates.push({
+                  priority,
+                  replyText: respNode.data.text.trim(),
+                  triggerType,
+                  triggerValue: triggerVal,
+                  contactNodeId: cNode.id,
+                  messageNodeId: respNode.id,
+                });
+              }
+            }
+          }
+
+          // Se o gatilho estiver diretamente conectado à RESPOSTA / MENSAGEM:
+          if (nextNode.type === 'message' || nextNode.type === 'response') {
+            if (nextNode.data.text && nextNode.data.text.trim()) {
+              candidates.push({
+                priority,
+                replyText: nextNode.data.text.trim(),
+                triggerType,
+                triggerValue: triggerVal,
+                contactNodeId: cNode.id,
+                messageNodeId: nextNode.id,
+              });
+            }
+          }
+        }
+      }
+
+      // CASO B: Contato diretamente conectado à RESPOSTA / MENSAGEM (Retrocompatibilidade)
+      if (targetNode.type === 'message' || targetNode.type === 'response') {
+        if (targetNode.data.text && targetNode.data.text.trim()) {
+          candidates.push({
+            priority: 4, // 'any' priority
+            replyText: targetNode.data.text.trim(),
+            triggerType: 'any',
+            triggerValue: '',
+            contactNodeId: cNode.id,
+            messageNodeId: targetNode.id,
+          });
+        }
+      }
+    }
+  }
+
+  if (candidates.length === 0) {
+    return { matched: false, reason: 'Nenhum gatilho/condição correspondeu à mensagem recebida' };
+  }
+
+  // Ordenar por prioridade: exata (1) > primeira conversa (2) > contém (3) > qualquer (4)
+  candidates.sort((a, b) => a.priority - b.priority);
+  const best = candidates[0];
+
+  return {
+    matched: true,
+    replyText: best.replyText,
+    triggerType: best.triggerType,
+    triggerValue: best.triggerValue,
+    contactNodeId: best.contactNodeId,
+    messageNodeId: best.messageNodeId,
+    conditionMatched: true,
+  };
+}
+
 export function testRulesEvaluation(contact: Contact, incomingMessage: string): RuleTestResult {
   const rules = db.getRules();
   const stats = db.getSystemStats();
@@ -351,50 +547,32 @@ export async function processIncomingMessage(params: {
     return { actionTaken: 'Ignorado: Automação pausada por emergência', isAi: false };
   }
 
-  // 5. Visual Flow configured response lookup
-  const manualFlow = db.getManualFlow();
-  const contactNodes = (manualFlow.nodes || []).filter((n) => n.type === 'contact');
-  const matchedContactNode = contactNodes.find((node) => {
-    if (node.data.contactId && node.data.contactId === contact.id) return true;
-    if (node.data.phone && contact.phone && contact.phone.replace(/\D/g, '').includes(node.data.phone.replace(/\D/g, ''))) return true;
-    if (node.data.contactName && normalizeText(node.data.contactName) === normalizeText(contact.name)) return true;
-    return false;
-  });
-
-  let configuredFlowReply = '';
-  if (matchedContactNode) {
-    const conn = (manualFlow.connections || []).find((c) => c.fromNodeId === matchedContactNode.id);
-    if (conn) {
-      const msgNode = (manualFlow.nodes || []).find((n) => n.id === conn.toNodeId && n.type === 'message');
-      if (msgNode && msgNode.data.text && msgNode.data.text.trim().length > 0) {
-        configuredFlowReply = msgNode.data.text.trim();
-      }
-    }
-  }
+  // 5. Visual Flow configured response lookup (Contato -> Gatilho -> Condição -> Resposta)
+  const flowEval = evaluateVisualFlow(contact, incomingText, convMessages);
 
   // 6. Contact is in MANUAL MODE (Modo Exclusivo nesta versão)
   incomingMsg.manual_action_pending = true;
 
-  if (configuredFlowReply) {
-    incomingMsg.suggested_ai_reply = configuredFlowReply;
+  if (flowEval.matched && flowEval.replyText) {
+    incomingMsg.suggested_ai_reply = flowEval.replyText;
     db.addLog({
       user_id: contact.user_id,
       message_id: incomingMsg.id,
       contact_id: contact.id,
       contact_name: contact.name,
       contact_phone: contact.phone,
-      action: 'Fluxo Manual: Resposta configurada aguardando confirmação',
+      action: `Fluxo Manual: Gatilho [${flowEval.triggerType || 'any'}] acionado`,
       result: 'manual_pending',
-      details: `Fluxo visual configurado para ${contact.name}. Mensagem pronta: "${configuredFlowReply}".`,
+      details: `Fluxo visual acionado para ${contact.name}. Gatilho: ${flowEval.triggerType}${flowEval.triggerValue ? ` ("${flowEval.triggerValue}")` : ''}. Mensagem pronta: "${flowEval.replyText}".`,
       incoming_message: incomingText,
-      outgoing_message: configuredFlowReply,
+      outgoing_message: flowEval.replyText,
       is_ai: false,
       is_demo: isDemo,
     });
 
     return {
-      actionTaken: `Fluxo Manual: Resposta configurada para ${contact.name}`,
-      replySent: configuredFlowReply,
+      actionTaken: `Fluxo Manual (${flowEval.triggerType}): Resposta configurada para ${contact.name}`,
+      replySent: flowEval.replyText,
       isAi: false,
       manualPending: true,
     };
