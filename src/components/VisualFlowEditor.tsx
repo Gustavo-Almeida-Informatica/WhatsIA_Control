@@ -938,26 +938,52 @@ export const VisualFlowEditor: React.FC<VisualFlowEditorProps> = ({
                         }
                         className="w-full p-2 bg-slate-950 border border-slate-800 rounded-xl text-white font-medium focus:outline-none focus:border-amber-500 text-xs"
                       >
-                        <option value="exact">🎯 Palavra Exata (Prioridade Máxima)</option>
+                        <option value="contains">🔍 Contém Palavra</option>
+                        <option value="exact">🎯 Palavra Exata</option>
                         <option value="first_message">💬 Primeira Conversa (Novo Contato)</option>
-                        <option value="contains">🔍 Contém Palavra(s)-chave</option>
+                        <option value="new_message">📩 Nova Mensagem</option>
+                        <option value="starts_with">➡️ Começa Com</option>
+                        <option value="ends_with">⬅️ Termina Com</option>
+                        <option value="multiple_words">📑 Várias Palavras (Todas Presentes)</option>
+                        <option value="specific_contact">👤 Contato Específico</option>
                         <option value="any">⚡ Qualquer Mensagem</option>
                       </select>
                     </div>
 
-                    {(node.data.triggerType === 'exact' || node.data.triggerType === 'contains') && (
+                    {(node.data.triggerType === 'exact' ||
+                      node.data.triggerType === 'contains' ||
+                      node.data.triggerType === 'starts_with' ||
+                      node.data.triggerType === 'ends_with' ||
+                      node.data.triggerType === 'multiple_words' ||
+                      node.data.triggerType === 'specific_contact') && (
                       <div>
                         <label className="block text-[10px] text-slate-400 mb-1">
                           {node.data.triggerType === 'exact'
                             ? 'Palavra ou frase exata:'
-                            : 'Palavras-chave (separadas por vírgula):'}
+                            : node.data.triggerType === 'contains'
+                            ? 'Palavra ou termo contido:'
+                            : node.data.triggerType === 'starts_with'
+                            ? 'Prefixo / Começa com:'
+                            : node.data.triggerType === 'ends_with'
+                            ? 'Sufixo / Termina com:'
+                            : node.data.triggerType === 'multiple_words'
+                            ? 'Palavras obrigatórias (separadas por espaço ou vírgula):'
+                            : 'Nome ou telefone do contato específico:'}
                         </label>
                         <input
                           type="text"
                           placeholder={
                             node.data.triggerType === 'exact'
-                              ? 'Ex: preco, orcamento, pix'
-                              : 'Ex: preco, valor, quanto custa'
+                              ? 'Ex: orcamento'
+                              : node.data.triggerType === 'contains'
+                              ? 'Ex: bom dia'
+                              : node.data.triggerType === 'starts_with'
+                              ? 'Ex: ola'
+                              : node.data.triggerType === 'ends_with'
+                              ? 'Ex: obrigado'
+                              : node.data.triggerType === 'multiple_words'
+                              ? 'Ex: quero comprar produto'
+                              : 'Ex: Max ou +5511999999999'
                           }
                           value={node.data.triggerValue || ''}
                           onChange={(e) => updateNodeData(node.id, { triggerValue: e.target.value })}
@@ -969,6 +995,12 @@ export const VisualFlowEditor: React.FC<VisualFlowEditorProps> = ({
                     {node.data.triggerType === 'first_message' && (
                       <p className="text-[10px] text-amber-300/80 bg-amber-950/40 p-2 rounded-lg border border-amber-800/40">
                         Dispara apenas na primeira mensagem recebida de um contato novo.
+                      </p>
+                    )}
+
+                    {node.data.triggerType === 'new_message' && (
+                      <p className="text-[10px] text-amber-300/80 bg-amber-950/40 p-2 rounded-lg border border-amber-800/40">
+                        Dispara a cada nova mensagem recebida (caso as condições sejam atendidas).
                       </p>
                     )}
                   </div>

@@ -230,7 +230,31 @@ export function evaluateVisualFlow(
             triggerMatched = keywords.some((kw) => normIncoming.includes(kw));
           }
           priority = 3;
-        } else if (triggerType === 'any') {
+        } else if (triggerType === 'starts_with') {
+          triggerMatched = normIncoming.startsWith(normTriggerVal);
+          priority = 3;
+        } else if (triggerType === 'ends_with') {
+          triggerMatched = normIncoming.endsWith(normTriggerVal);
+          priority = 3;
+        } else if (triggerType === 'multiple_words') {
+          if (!normTriggerVal) {
+            triggerMatched = true;
+          } else {
+            const words = normTriggerVal.split(/[,;\s]+/).map((w) => w.trim()).filter(Boolean);
+            triggerMatched = words.length > 0 && words.every((w) => normIncoming.includes(w));
+          }
+          priority = 2;
+        } else if (triggerType === 'specific_contact') {
+          if (!normTriggerVal) {
+            triggerMatched = true;
+          } else {
+            const isIdMatch = contact.id === triggerVal;
+            const isNameMatch = normalizeText(contact.name).includes(normTriggerVal);
+            const isPhoneMatch = contact.phone.replace(/\D/g, '').includes(normTriggerVal.replace(/\D/g, ''));
+            triggerMatched = isIdMatch || isNameMatch || isPhoneMatch;
+          }
+          priority = 1;
+        } else if (triggerType === 'new_message' || triggerType === 'any') {
           triggerMatched = true;
           priority = 4;
         }
@@ -633,5 +657,139 @@ export async function processIncomingMessage(params: {
     actionTaken: 'Modo Manual: Aguardando resposta humana',
     isAi: false,
     manualPending: true,
+  };
+}
+
+export interface UnifiedRuleEvaluationResult {
+  matched: boolean;
+  source: 'rule' | 'flow' | 'ai' | 'none';
+  replyText?: string;
+  rule?: Rule;
+  flowTriggerType?: string;
+  flowTriggerValue?: string;
+  actionType?: string;
+  isAi?: boolean;
+  blocked?: boolean;
+  autoReplyDisabled?: boolean;
+  paused?: boolean;
+  reason?: string;
+}
+
+export function evaluateRulesAndFlow(
+  contact: Contact,
+  incomingText: string,
+  existingConversationMessages: Message[] = []
+): UnifiedRuleEvaluationResult {
+  const stats = db.getStats();
+
+  // 1. Check if contact is blocked
+  if (contact.blocked) {
+    return {
+      matched: false,
+      source: 'none',
+      blocked: true,
+      reason: 'Contato está bloqueado.',
+    };
+  }
+
+  // 2. Check emergency pause
+  if (stats.automation_paused) {
+    return {
+      matched: false,
+      source: 'none',
+      paused: true,
+      reason: 'Automação pausada globalmente.',
+    };
+  }
+
+  // 3. Check auto-reply disabled for this specific contact
+  if (contact.auto_reply_disabled) {
+    return {
+      matched: false,
+      source: 'none',
+      autoReplyDisabled: true,
+      reason: 'Auto-resposta desativada para este contato.',
+    };
+  }
+
+  // 4. Evaluate active Rules from db.getRules()
+  const rules = db.getRules().filter((r) => r.enabled && (r.is_active ?? true));
+  rules.sort((a, b) => (a.priority || 999) - (b.priority || 999));
+
+  for (const rule of rules) {
+    if (!checkTargetMatch(rule, contact)) continue;
+    if (!checkTriggerMatch(rule, incomingText, contact)) continue;
+    const condCheck = checkConditionsMatch(rule, incomingText, contact);
+    if (!condCheck.matched) continue;
+
+    // Matched Rule!
+    if (rule.action_type === 'do_not_reply') {
+      return {
+        matched: true,
+        source: 'rule',
+        rule,
+        actionType: 'do_not_reply',
+        reason: 'Regra configurada para silenciar/não responder.',
+      };
+    }
+
+    if (rule.action_type === 'fixed_reply') {
+      return {
+        matched: true,
+        source: 'rule',
+        rule,
+        actionType: 'fixed_reply',
+        replyText: rule.action_value,
+        isAi: false,
+      };
+    }
+
+    if (rule.action_type === 'ai_reply') {
+      return {
+        matched: true,
+        source: 'rule',
+        rule,
+        actionType: 'ai_reply',
+        isAi: true,
+      };
+    }
+
+    if (rule.action_type === 'add_tag') {
+      return {
+        matched: true,
+        source: 'rule',
+        rule,
+        actionType: 'add_tag',
+      };
+    }
+
+    return {
+      matched: true,
+      source: 'rule',
+      rule,
+      actionType: rule.action_type,
+      replyText: rule.action_value,
+      isAi: false,
+    };
+  }
+
+  // 5. Evaluate active Visual Flow
+  const flowResult = evaluateVisualFlow(contact, incomingText, existingConversationMessages);
+  if (flowResult.matched && flowResult.replyText) {
+    return {
+      matched: true,
+      source: 'flow',
+      replyText: flowResult.replyText,
+      flowTriggerType: flowResult.triggerType,
+      flowTriggerValue: flowResult.triggerValue,
+      actionType: 'fixed_reply',
+      isAi: false,
+    };
+  }
+
+  return {
+    matched: false,
+    source: 'none',
+    reason: 'Nenhuma regra ou fluxo visual correspondeu.',
   };
 }

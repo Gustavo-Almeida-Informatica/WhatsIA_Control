@@ -3,7 +3,7 @@ import { createRequire } from 'module';
 import QRCode from 'qrcode';
 import { db } from './db';
 import { generateChatbotReply } from './geminiService';
-import { evaluateVisualFlow } from './ruleEngine';
+import { evaluateRulesAndFlow, evaluateVisualFlow } from './ruleEngine';
 import { Server as SocketIOServer } from 'socket.io';
 import { Contact, ConnectionStatus } from '../types';
 
@@ -23,6 +23,12 @@ class WhatsAppManager {
   private latestQrDataUrl: string | null = null;
   private latestQrRaw: string | null = null;
   private lastReplyTimestamps = new Map<string, number>();
+  private processedMessageIds = new Set<string>();
+  private isReconnecting = false;
+  private reconnectTimer: NodeJS.Timeout | null = null;
+  private reconnectAttempts = 0;
+  private readonly MAX_RECONNECT_ATTEMPTS = 5;
+  private userInitiatedLogout = false;
 
   setIo(io: SocketIOServer) {
     this.io = io;
@@ -162,6 +168,12 @@ class WhatsAppManager {
         console.log('[WhatsApp] Cliente está PRONTO (ready)!');
         this.latestQrDataUrl = null;
         this.latestQrRaw = null;
+        this.reconnectAttempts = 0;
+        this.isReconnecting = false;
+        if (this.reconnectTimer) {
+          clearTimeout(this.reconnectTimer);
+          this.reconnectTimer = null;
+        }
 
         let phoneNumber = '';
         let displayName = '';
@@ -201,16 +213,29 @@ class WhatsAppManager {
 
       // 6. EVENTO DISCONNECTED
       this.client.on('disconnected', (reason: string) => {
-        console.warn('[WhatsApp] WhatsApp desconectado:', reason);
+        console.warn('[WhatsApp] WhatsApp desconectado. Motivo:', reason);
         this.latestQrDataUrl = null;
         this.latestQrRaw = null;
         this.emitStatus('disconnected', '🔴 WhatsApp desconectado.', {
           error_message: reason,
         });
 
+        db.addLog({
+          action: 'WhatsApp desconectado',
+          result: 'disconnected',
+          details: `Motivo: ${reason}`,
+        });
+
         if (this.io) {
           this.io.emit('whatsapp:disconnected', { reason });
         }
+
+        if (this.userInitiatedLogout) {
+          console.log('[WhatsApp Reconnection] Desconexão manual solicitada pelo usuário. Não reconectar automaticamente.');
+          return;
+        }
+
+        this.handleControlledReconnection(reason);
       });
 
       // 7. EVENTO MESSAGE (RECEBIMENTO REAL DE MENSAGENS)
@@ -234,187 +259,378 @@ class WhatsAppManager {
     }
   }
 
+  private handleControlledReconnection(reason: string): void {
+    if (this.isInitializing || this.isReconnecting) {
+      console.log('[WhatsApp Reconnection] Já existe uma tentativa de inicialização/reconexão em andamento.');
+      return;
+    }
+
+    if (this.reconnectAttempts >= this.MAX_RECONNECT_ATTEMPTS) {
+      console.warn(`[WhatsApp Reconnection] Limite máximo de tentativas (${this.MAX_RECONNECT_ATTEMPTS}) atingido. Aguardando reconexão manual via QR Code.`);
+      this.emitStatus('disconnected', '🔴 Desconectado. Reconecte manualmente via QR Code.', {
+        error_message: `Limite de reconexões atingido (${reason}).`,
+      });
+      return;
+    }
+
+    this.isReconnecting = true;
+    this.reconnectAttempts++;
+    const delayMs = Math.min(30000, this.reconnectAttempts * 5000);
+
+    console.log(`[WhatsApp Reconnection] Tentativa de reconexão ${this.reconnectAttempts}/${this.MAX_RECONNECT_ATTEMPTS} agendada para ${delayMs / 1000}s...`);
+
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+    }
+
+    this.reconnectTimer = setTimeout(async () => {
+      this.reconnectTimer = null;
+      try {
+        if (this.client) {
+          try {
+            await this.client.destroy();
+          } catch (e) {
+            // ignore
+          }
+          this.client = null;
+        }
+        console.log('[WhatsApp Reconnection] Reinicializando cliente controlado...');
+        await this.initialize();
+      } catch (err) {
+        console.error('[WhatsApp Reconnection] Falha ao tentar reconectar:', err);
+      } finally {
+        this.isReconnecting = false;
+      }
+    }, delayMs);
+  }
+
   private async handleIncomingMessage(msg: any): Promise<void> {
-    // Ignora mensagens de status e broadcasts
-    if (msg.from === 'status@broadcast' || !msg.body) {
+    if (!msg || !msg.body || !msg.from) {
+      return;
+    }
+
+    const msgId = msg.id?._serialized || msg.id?.id || String(msg.id);
+    if (!msgId || this.processedMessageIds.has(msgId)) {
+      console.log(`[WhatsApp] Mensagem ignorada (duplicada): ${msgId}`);
+      return;
+    }
+    this.processedMessageIds.add(msgId);
+    if (this.processedMessageIds.size > 2000) {
+      const first = this.processedMessageIds.values().next().value;
+      if (first) this.processedMessageIds.delete(first);
+    }
+
+    const from = String(msg.from).toLowerCase();
+    // Ignora mensagens de status, broadcasts de sistema, newsletters/canais e notificações técnicas
+    if (
+      from === 'status@broadcast' ||
+      from.endsWith('@broadcast') ||
+      from.endsWith('@newsletter') ||
+      from.startsWith('server@') ||
+      from.startsWith('0@') ||
+      msg.type === 'notification' ||
+      msg.type === 'call_log' ||
+      msg.type === 'e2e_notification'
+    ) {
       return;
     }
 
     const isGroup = msg.from.endsWith('@g.us');
-    const senderNumber = msg.from.replace(/@c\.us|@g\.us/g, '');
+    let senderNumber = msg.from.replace(/@c\.us|@g\.us|@lid/g, '');
 
-    console.log(`[WhatsApp] Mensagem recebida de ${msg.from}: "${msg.body}"`);
+    console.log(`[WhatsApp] Mensagem recebida de ${msg.from}: "${msg.body}" (ID: ${msgId})`);
 
-    // 1. Identificar ou cadastrar o contato sem transformar pessoa desconhecida em contato de agenda
+    // 1. SE FOR MENSAGEM DE GRUPO:
+    if (isGroup) {
+      let groupName = 'Grupo WhatsApp';
+      try {
+        const chat = await msg.getChat();
+        if (chat && chat.name) groupName = chat.name;
+      } catch (err) {
+        console.warn('[WhatsApp] Erro ao obter chat do grupo:', err);
+      }
+
+      // Salva no repositório de GRUPOS e NUNCA como contato individual
+      db.saveGroup({
+        whatsapp_id: msg.from,
+        name: groupName,
+        last_message: msg.body,
+        last_message_time: new Date().toISOString(),
+      });
+
+      const conv = db.findOrCreateConversation({
+        whatsapp_conversation_id: msg.from,
+        name: groupName,
+        is_group: true,
+      });
+
+      db.saveMessage({
+        conversation_id: conv.id,
+        sender: 'contact',
+        content: msg.body,
+        whatsapp_message_id: msgId,
+        status: 'read',
+      });
+
+      db.addHistory({
+        contact_name: groupName,
+        contact_phone: msg.from,
+        message: msg.body,
+        direction: 'incoming',
+        mode: 'manual',
+        status: 'received',
+        whatsapp_message_id: msgId,
+      });
+
+      if (this.io) {
+        this.io.emit('whatsapp:incoming_message', {
+          conversation_id: conv.id,
+          message: {
+            id: msgId,
+            content: msg.body,
+            timestamp: new Date().toISOString(),
+          },
+        });
+      }
+      return;
+    }
+
+    // 2. MENSAGEM INDIVIDUAL (1:1):
     let contactName = senderNumber;
     let isSavedInPhone = false;
+    let phoneToUse = senderNumber.startsWith('+') ? senderNumber : `+${senderNumber}`;
+
     try {
       const contactObj = await msg.getContact();
       if (contactObj) {
-        contactName = contactObj.pushname || contactObj.name || contactObj.shortName || senderNumber;
+        if (contactObj.number) {
+          senderNumber = contactObj.number;
+          phoneToUse = `+${contactObj.number}`;
+        }
+        contactName = contactObj.pushname || contactObj.name || contactObj.shortName || contactObj.number || senderNumber;
         isSavedInPhone = Boolean(contactObj.isMyContact);
       }
     } catch (err) {
       console.warn('[WhatsApp] Não foi possível obter detalhes do contato:', err);
     }
 
-    // Verificar se já existe registro prévio
-    const existing = db.getContactByWhatsappId(msg.from) || db.getContactByPhone(`+${senderNumber}`);
-    const isContactSaved = existing?.is_my_contact !== undefined ? existing.is_my_contact : isSavedInPhone;
+    // Verificar se contato já existe salvo na agenda do sistema
+    let existingContact = db.getContactByWhatsappId(msg.from) || db.getContactByPhone(phoneToUse);
 
-    // Salvar ou atualizar contato garantindo is_my_contact e has_conversation corretos
-    const contact = db.saveContact({
+    // Se o contato realmente está na agenda do celular (isSavedInPhone ou existingContact.is_my_contact === true), atualiza
+    if (isSavedInPhone || existingContact?.is_my_contact) {
+      existingContact = db.saveContact({
+        name: contactName,
+        phone: phoneToUse,
+        whatsapp_id: msg.from,
+        type: 'individual',
+        is_my_contact: true,
+        has_conversation: true,
+        possui_conversa: true,
+        mode: 'manual',
+      });
+    }
+
+    // Salvar conversa separadamente (não transforma desconhecido em contato de agenda)
+    const conversation = db.findOrCreateConversation({
+      whatsapp_conversation_id: msg.from,
       name: contactName,
-      phone: `+${senderNumber}`,
-      whatsapp_id: msg.from,
-      type: isGroup ? 'group' : 'individual',
-      is_my_contact: isContactSaved,
-      has_conversation: true,
-      possui_conversa: true,
-      mode: 'manual',
+      phone: phoneToUse,
+      contact_id: existingContact?.id,
+      is_group: false,
     });
 
-    // 2. Salvar mensagem recebida e conversa
-    const conversation = db.findOrCreateConversation(contact.id);
-    conversation.last_message_at = new Date().toISOString();
-
     const savedMsg = db.saveMessage({
-      contact_id: contact.id,
+      conversation_id: conversation.id,
+      contact_id: existingContact?.id,
       sender: 'contact',
       content: msg.body,
-      whatsapp_message_id: msg.id?.id || msg.id?._serialized,
+      whatsapp_message_id: msgId,
       status: 'read',
     });
 
-    // Registrar no histórico
     db.addHistory({
-      contact_id: contact.id,
-      contact_name: contact.name,
-      contact_phone: contact.phone,
+      contact_id: existingContact?.id,
+      contact_name: contactName,
+      contact_phone: phoneToUse,
       message: msg.body,
       direction: 'incoming',
-      mode: contact.mode || 'manual',
+      mode: 'manual',
       status: 'received',
-      whatsapp_message_id: msg.id?._serialized,
+      whatsapp_message_id: msgId,
     });
 
-    // Notificar frontend via Socket.IO
     if (this.io) {
       this.io.emit('whatsapp:incoming_message', {
         contact: {
-          id: contact.id,
-          name: contact.name,
-          phone: contact.phone,
-          mode: contact.mode,
-          is_my_contact: contact.is_my_contact,
+          id: existingContact?.id || `temp_${senderNumber}`,
+          name: contactName,
+          phone: phoneToUse,
+          mode: 'manual',
+          is_my_contact: Boolean(existingContact?.is_my_contact),
           has_conversation: true,
         },
         message: {
-          id: savedMsg.id,
+          id: savedMsg?.id || msgId,
           content: msg.body,
-          timestamp: savedMsg.timestamp,
+          timestamp: savedMsg?.timestamp || new Date().toISOString(),
         },
         pending_manual: true,
       });
     }
 
-    // 3. Avaliar Fluxo Visual (Contato -> Gatilho -> Condição -> Resposta)
-    const convMessages = db.getMessages(conversation.id);
-    const flowEval = evaluateVisualFlow(contact, msg.body, convMessages);
+    // Objeto de contato efetivo para avaliação de regras
+    const effectiveContact: Contact = existingContact || {
+      id: `temp_${senderNumber}`,
+      user_id: 'usr_main_01',
+      whatsapp_id: msg.from,
+      name: contactName,
+      phone: phoneToUse,
+      type: 'individual',
+      blocked: false,
+      auto_reply_disabled: false,
+      automation_enabled: true,
+      mode: 'manual',
+      allow_ai: false,
+      is_my_contact: false,
+      has_conversation: true,
+      tags: [],
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
 
-    if (flowEval.matched && flowEval.replyText) {
-      const textToSend = flowEval.replyText.trim();
-      const now = Date.now();
-      const lastReply = this.lastReplyTimestamps.get(contact.id) || 0;
+    // 3. EXECUTAR O RULEENGINE REAL (verifica regras e fluxos ativos)
+    const convMessages = conversation?.id ? db.getMessages(conversation.id) : [];
+    const evalResult = evaluateRulesAndFlow(effectiveContact, msg.body, convMessages);
 
-      // Anti-Loop: Evita responder dentro de 3.5 segundos para a mesma pessoa
-      if (now - lastReply < 3500) {
-        console.log(`[WhatsApp Anti-Loop] Mensagem ignorada para evitar loop com ${contact.name}`);
-        return;
-      }
-
-      const stats = db.getStats();
-      if (stats.automation_paused) {
-        console.log('[WhatsApp] Automação pausada globalmente. Resposta bloqueada.');
+    if (evalResult.matched) {
+      if (evalResult.actionType === 'do_not_reply') {
+        console.log(`[WhatsApp RuleEngine] Regra silenciada para ${contactName}`);
         db.addLog({
-          action: 'Fluxo Visual Bloqueado',
-          result: 'blocked_paused',
-          contact_name: contact.name,
-          contact_phone: contact.phone,
-          incoming_message: msg.body,
-          details: 'Automação pausada globalmente pelo usuário.',
-        });
-        return;
-      }
-
-      if (contact.auto_reply_disabled) {
-        console.log(`[WhatsApp] Auto-resposta desativada especificamente para ${contact.name}.`);
-        db.addLog({
-          action: 'Fluxo Visual Ignorado',
+          action: `Regra Silenciada: ${evalResult.rule?.name || 'Não responder'}`,
           result: 'ignored_rule',
-          contact_name: contact.name,
-          contact_phone: contact.phone,
+          contact_name: contactName,
+          contact_phone: phoneToUse,
           incoming_message: msg.body,
-          details: 'Auto-resposta desativada para este contato.',
+          details: 'Ação do motor de regras configurada para não responder.',
         });
         return;
       }
 
-      this.lastReplyTimestamps.set(contact.id, now);
-      console.log(`[WhatsApp] Executando Fluxo Visual (Gatilho: ${flowEval.triggerType}) para ${contact.name}: "${textToSend}"`);
-
-      try {
-        await this.client.sendMessage(msg.from, textToSend);
-
-        db.saveMessage({
-          contact_id: contact.id,
-          sender: 'bot',
-          content: textToSend,
-          status: 'sent',
-        });
-
-        db.addHistory({
-          contact_id: contact.id,
-          contact_name: contact.name,
-          contact_phone: contact.phone,
-          message: textToSend,
-          direction: 'outgoing',
-          mode: 'manual',
-          status: 'sent',
-        });
-
+      if (evalResult.actionType === 'add_tag' && evalResult.rule) {
+        if (existingContact) {
+          const tag = evalResult.rule.action_value;
+          if (tag && !existingContact.tags.includes(tag)) {
+            existingContact.tags.push(tag);
+            db.saveContact(existingContact);
+          }
+        }
         db.addLog({
-          action: `Fluxo Manual: Gatilho [${flowEval.triggerType}] disparado`,
-          result: 'replied_manual',
-          contact_name: contact.name,
-          contact_phone: contact.phone,
+          action: `Regra: Etiqueta adicionada (${evalResult.rule.action_value})`,
+          result: 'tagged',
+          contact_name: contactName,
           incoming_message: msg.body,
-          outgoing_message: textToSend,
-          details: `Gatilho: ${flowEval.triggerType}${flowEval.triggerValue ? ` ("${flowEval.triggerValue}")` : ''}`,
         });
+        return;
+      }
 
-        if (this.io) {
-          this.io.emit('whatsapp:message_sent', {
-            contact_id: contact.id,
+      let textToSend = evalResult.replyText ? evalResult.replyText.trim() : '';
+
+      // Se for ação de IA e o contato/usuário autorizou
+      if (evalResult.actionType === 'ai_reply') {
+        const aiSettings = db.getAISettings();
+        if (aiSettings.enabled && (effectiveContact.allow_ai || aiSettings.fallback_enabled)) {
+          try {
+            textToSend = await generateChatbotReply({
+              contact: effectiveContact,
+              incomingText: msg.body,
+              conversationMessages: convMessages,
+            });
+          } catch (aiErr: any) {
+            console.error('[WhatsApp] Falha ao gerar resposta de IA:', aiErr);
+          }
+        }
+      }
+
+      if (textToSend) {
+        const now = Date.now();
+        const contactIdentifier = existingContact?.id || phoneToUse;
+        const lastReply = this.lastReplyTimestamps.get(contactIdentifier) || 0;
+
+        // Anti-Loop (2.5 segundos)
+        if (now - lastReply < 2500) {
+          console.log(`[WhatsApp Anti-Loop] Mensagem ignorada para evitar loop com ${contactName}`);
+          return;
+        }
+
+        this.lastReplyTimestamps.set(contactIdentifier, now);
+        console.log(`[WhatsApp RuleEngine] Disparando resposta (${evalResult.source}) para ${contactName}: "${textToSend}"`);
+
+        if (!this.client) {
+          console.warn(`[WhatsApp RuleEngine] Cliente não inicializado para envio automático para ${contactName}.`);
+          return;
+        }
+
+        try {
+          const sent = await this.client.sendMessage(msg.from, textToSend);
+          const sentMsgId = sent?.id?._serialized || `msg_${Date.now()}`;
+
+          db.saveMessage({
+            conversation_id: conversation.id,
+            contact_id: existingContact?.id,
+            sender: 'bot',
             content: textToSend,
+            whatsapp_message_id: sentMsgId,
+            status: 'sent',
+          });
+
+          db.addHistory({
+            contact_id: existingContact?.id,
+            contact_name: contactName,
+            contact_phone: phoneToUse,
+            message: textToSend,
+            direction: 'outgoing',
             mode: 'manual',
+            status: 'sent',
+            whatsapp_message_id: sentMsgId,
+          });
+
+          db.addLog({
+            action: evalResult.source === 'rule'
+              ? `Regra [${evalResult.rule?.name || 'Gatilho'}] disparada`
+              : `Fluxo Visual [${evalResult.flowTriggerType || 'Gatilho'}] disparado`,
+            result: 'replied_manual',
+            contact_name: contactName,
+            contact_phone: phoneToUse,
+            incoming_message: msg.body,
+            outgoing_message: textToSend,
+            details: `Origem: ${evalResult.source}. Disparo real via whatsapp-web.js.`,
+          });
+
+          if (this.io) {
+            this.io.emit('whatsapp:message_sent', {
+              conversation_id: conversation.id,
+              contact_id: existingContact?.id,
+              content: textToSend,
+              mode: 'manual',
+            });
+          }
+          return;
+        } catch (sendErr: any) {
+          console.error('[WhatsApp] Erro ao enviar resposta automática do RuleEngine:', sendErr);
+          db.addLog({
+            action: 'Falha no envio de resposta do RuleEngine',
+            result: 'error',
+            contact_name: contactName,
+            contact_phone: phoneToUse,
+            error: sendErr.message,
           });
         }
-        return;
-      } catch (sendErr: any) {
-        console.error('[WhatsApp] Erro ao enviar resposta do fluxo:', sendErr);
-        db.addLog({
-          action: 'Falha no envio do Fluxo Visual',
-          result: 'error',
-          contact_name: contact.name,
-          contact_phone: contact.phone,
-          error: sendErr.message,
-        });
       }
     }
 
-    // 4. Caso padrão: se não houve disparo automático de fluxo, aguarda ação manual no painel
-    console.log(`[WhatsApp] Contato ${contact.name}: Mensagem aguardando resposta manual.`);
+    // 4. Caso padrão: se não houve disparo automático de regra/fluxo, aguarda ação manual no painel
+    console.log(`[WhatsApp] Contato ${contactName}: Mensagem aguardando resposta manual.`);
   }
 
   isReady(): boolean {
@@ -677,8 +893,6 @@ class WhatsAppManager {
         console.warn('[WhatsApp] Erro ao obter chats:', chatErr);
       }
 
-      const activeDirectChatIds = new Set<string>();
-
       if (Array.isArray(waChats)) {
         for (const chat of waChats) {
           const chatId = chat.id?._serialized || '';
@@ -703,55 +917,43 @@ class WhatsAppManager {
               last_message_time: chat.timestamp ? new Date(chat.timestamp * 1000).toISOString() : undefined,
             });
           } else {
-            activeDirectChatIds.add(chatId);
-
-            // Criar ou atualizar registro de conversa direta (1:1)
+            // Conversas diretas 1:1:
+            // NÃO transformar conversa em contato da agenda!
             const cleanDigits = chatId.replace(/@c\.us|@g\.us/g, '').replace(/\D/g, '');
-            if (cleanDigits.length >= 8) {
-              const phoneNum = `+${cleanDigits}`;
-              let existing = db.getContactByWhatsappId(chatId) || db.getContactByPhone(phoneNum);
+            const phoneNum = cleanDigits.length >= 8 ? `+${cleanDigits}` : '';
+            const existingContact = db.getContactByWhatsappId(chatId) || (phoneNum ? db.getContactByPhone(phoneNum) : undefined);
 
-              if (!existing) {
-                // Registrar participante da conversa (is_my_contact: false a menos que verificado na agenda)
-                existing = db.saveContact({
-                  name: chat.name || phoneNum,
-                  phone: phoneNum,
-                  whatsapp_id: chatId,
-                  type: 'individual',
-                  is_my_contact: false,
-                  has_conversation: true,
-                  possui_conversa: true,
-                  mode: 'manual',
-                });
-              } else {
-                existing.has_conversation = true;
-                existing.possui_conversa = true;
-              }
+            const conv = db.findOrCreateConversation({
+              whatsapp_conversation_id: chatId,
+              name: chat.name || phoneNum || 'Conversa sem nome',
+              phone: phoneNum,
+              contact_id: existingContact?.id,
+              is_group: false,
+            });
 
-              const conv = db.findOrCreateConversation(existing.id);
-              if (chat.timestamp) {
-                conv.last_message_at = new Date(chat.timestamp * 1000).toISOString();
-              }
-              if (chat.lastMessage?.body) {
-                db.saveMessage({
-                  contact_id: existing.id,
-                  sender: chat.lastMessage.fromMe ? 'user' : 'contact',
-                  content: chat.lastMessage.body,
-                  status: 'read',
-                });
-              }
+            if (chat.timestamp) {
+              conv.last_message_at = new Date(chat.timestamp * 1000).toISOString();
+            }
+            if (chat.lastMessage?.body) {
+              db.saveMessage({
+                conversation_id: conv.id,
+                contact_id: existingContact?.id,
+                sender: chat.lastMessage.fromMe ? 'user' : 'contact',
+                content: chat.lastMessage.body,
+                status: 'read',
+              });
             }
           }
         }
       }
 
-      // 2. Buscar CONTATOS REAIS da Agenda do Usuário
+      // 2. Buscar CONTATOS REAIS da Agenda do Usuário (~392)
+      // REGRA: CONTATOS são exclusivamente pessoas que possuem isMyContact === true
       const waContacts = await this.client.getContacts();
       console.log(`[WhatsApp] Total bruto retornado por getContacts(): ${waContacts?.length || 0}`);
 
       if (Array.isArray(waContacts)) {
         let savedAgendaCount = 0;
-        let directChatParticipantCount = 0;
 
         for (const c of waContacts) {
           const serialized = c.id?._serialized || '';
@@ -781,11 +983,9 @@ class WhatsAppManager {
             continue;
           }
 
-          const isSavedInPhone = Boolean(c.isMyContact);
-          const hasDirectChat = activeDirectChatIds.has(serialized);
-
-          // ATENÇÃO: NÃO salvar participantes de grupos que não estejam na agenda nem possuam conversa direta
-          if (!isSavedInPhone && !hasDirectChat) {
+          // REGRA DE OURO: Somente pessoas que realmente possuem isMyContact === true
+          // Participantes de grupos e pessoas sem contato na agenda são descartados da lista de contatos!
+          if (!c.isMyContact) {
             continue;
           }
 
@@ -795,23 +995,28 @@ class WhatsAppManager {
           const phoneNum = `+${cleanNum}`;
           const displayName = c.name || c.pushname || c.shortName || phoneNum;
 
-          db.saveContact({
+          const savedContact = db.saveContact({
             name: displayName,
             phone: phoneNum,
             whatsapp_id: serialized,
             type: 'individual',
-            is_my_contact: isSavedInPhone,
-            has_conversation: hasDirectChat,
-            possui_conversa: hasDirectChat,
+            is_my_contact: true,
+            has_conversation: true,
+            possui_conversa: true,
             mode: 'manual',
-            automation_enabled: false,
+            automation_enabled: true,
             allow_ai: false,
           });
 
-          if (isSavedInPhone) savedAgendaCount++;
-          else directChatParticipantCount++;
+          // Se houver conversa aberta correspondente, vincula contact_id
+          const conv = db.getConversations().find((cv) => cv.whatsapp_conversation_id === serialized || cv.phone === phoneNum);
+          if (conv && !conv.contact_id) {
+            conv.contact_id = savedContact.id;
+          }
+
+          savedAgendaCount++;
         }
-        console.log(`[WhatsApp] Sincronização concluída: ${savedAgendaCount} contatos da agenda (~392), ${directChatParticipantCount} participantes de conversas (~552).`);
+        console.log(`[WhatsApp] Sincronização concluída: ${savedAgendaCount} contatos reais salvos na agenda (~392).`);
       }
 
       if (this.io) {
@@ -832,6 +1037,13 @@ class WhatsAppManager {
   // LOGOUT / DESCONECTAR
   async logout(): Promise<void> {
     console.log('[WhatsApp] Desconectando sessão...');
+    this.userInitiatedLogout = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.isReconnecting = false;
+    this.reconnectAttempts = 0;
     this.latestQrDataUrl = null;
     this.latestQrRaw = null;
 

@@ -31,7 +31,16 @@ export type ContactType = 'individual' | 'group' | 'business';
 
 export type FlowNodeType = 'contact' | 'trigger' | 'condition' | 'message' | 'response';
 
-export type FlowTriggerType = 'exact' | 'first_message' | 'contains' | 'any';
+export type FlowTriggerType =
+  | 'exact'
+  | 'contains'
+  | 'starts_with'
+  | 'ends_with'
+  | 'multiple_words'
+  | 'first_message'
+  | 'new_message'
+  | 'specific_contact'
+  | 'any';
 
 export type FlowConditionType = 'time_range' | 'days_of_week' | 'not_blocked' | 'only_saved';
 
@@ -130,7 +139,7 @@ export interface HistoryRecord {
   contact_phone: string;
   message: string;
   direction: 'outgoing' | 'incoming';
-  mode: 'manual' | 'automatic' | 'ai';
+  mode: 'manual' | 'ai';
   status: 'sent' | 'delivered' | 'read' | 'failed' | 'received';
   whatsapp_message_id?: string;
   error?: string;
@@ -140,9 +149,14 @@ export interface HistoryRecord {
 export interface Conversation {
   id: string;
   user_id: string;
-  contact_id: string;
+  contact_id?: string;
   contact?: Contact;
   whatsapp_conversation_id: string;
+  name?: string;
+  phone?: string;
+  is_group?: boolean;
+  unread_count?: number;
+  last_message_content?: string;
   status: 'active' | 'archived' | 'pending_manual';
   last_message_at: string;
   created_at: string;
@@ -314,5 +328,5 @@ export interface RuleTestResult {
   simulated_reply?: string;
   would_be_blocked?: boolean;
   block_reason?: string;
-  operation_mode?: 'automatic' | 'manual';
+  operation_mode?: 'manual' | 'ai';
 }

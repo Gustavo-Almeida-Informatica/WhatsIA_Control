@@ -168,9 +168,9 @@ export const RuleTesterModal: React.FC<RuleTesterModalProps> = ({
               <div className="p-3 bg-slate-900 rounded-lg border border-slate-800">
                 <span className="text-slate-400 text-[11px] block mb-1">Modo de Operação:</span>
                 <span className="font-bold text-slate-200">
-                  {result.operation_mode === 'automatic'
-                    ? '⚡ Automático (Envio direto)'
-                    : '🛡️ Manual (Aguardaria aprovação)'}
+                  {result.operation_mode === 'ai'
+                    ? '🤖 IA Assistida (Geração Inteligente)'
+                    : '🛡️ Manual (Controle Direto / Fluxo)'}
                 </span>
               </div>
             </div>

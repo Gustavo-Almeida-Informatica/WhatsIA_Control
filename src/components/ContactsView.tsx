@@ -43,9 +43,15 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
     null
   );
 
-  // Paginação
+  // Paginação no Backend
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
+  const [serverContacts, setServerContacts] = useState<Contact[]>([]);
+  const [serverTotal, setServerTotal] = useState(0);
+  const [serverTotalPages, setServerTotalPages] = useState(1);
+  const [serverSavedCount, setServerSavedCount] = useState(0);
+  const [serverAllCount, setServerAllCount] = useState(0);
+  const [loadingContacts, setLoadingContacts] = useState(false);
 
   // Modal de configuração e perfil por contato
   const [activeContact, setActiveContact] = useState<Contact | null>(null);
@@ -70,67 +76,56 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
     return () => clearTimeout(handler);
   }, [searchQuery]);
 
-  // Contatos reais filtrados (garante exclusão de grupos e IDs técnicos)
-  const realContacts = useMemo(() => {
-    return contacts.filter((c) => {
-      if (c.type === 'group' || c.whatsapp_id?.endsWith('@g.us')) return false;
-      if (
-        c.whatsapp_id?.includes('@broadcast') ||
-        c.whatsapp_id?.includes('@newsletter') ||
-        c.whatsapp_id?.includes('@lid') ||
-        c.whatsapp_id === 'status@broadcast'
-      ) {
-        return false;
-      }
-      return true;
-    });
-  }, [contacts]);
-
-  // Contagem de salvos na agenda
-  const savedCount = useMemo(() => {
-    return realContacts.filter((c) => c.is_my_contact).length;
-  }, [realContacts]);
-
-  // Filtro por tab + busca
-  const filteredContacts = useMemo(() => {
-    let list = realContacts;
-
-    if (filterTab === 'saved') {
-      list = list.filter((c) => c.is_my_contact);
-    }
-
-    if (debouncedQuery.trim()) {
-      const q = debouncedQuery.toLowerCase().trim();
-      const qDigits = q.replace(/\D/g, '');
-      list = list.filter((c) => {
-        if (c.name.toLowerCase().includes(q)) return true;
-        if (qDigits && c.phone.replace(/\D/g, '').includes(qDigits)) return true;
-        return false;
+  // Carregar contatos paginados diretamente do Backend
+  const loadBackendContacts = async () => {
+    setLoadingContacts(true);
+    try {
+      const res = await api.getContacts({
+        page: currentPage,
+        limit: pageSize,
+        search: debouncedQuery.trim() || undefined,
+        only_saved: filterTab === 'saved',
+        all: filterTab === 'all',
       });
+
+      if (res && Array.isArray(res.contacts)) {
+        setServerContacts(res.contacts);
+        setServerTotal(res.total || 0);
+        setServerTotalPages(res.totalPages || 1);
+        if (res.totalSaved !== undefined) setServerSavedCount(res.totalSaved);
+        if (res.totalAll !== undefined) setServerAllCount(res.totalAll);
+      } else if (Array.isArray(res)) {
+        // Fallback caso venha array puro
+        setServerContacts(res);
+        setServerTotal(res.length);
+        setServerTotalPages(Math.max(1, Math.ceil(res.length / pageSize)));
+      }
+    } catch (err: any) {
+      console.error('[ContactsView] Erro ao carregar contatos do backend:', err);
+    } finally {
+      setLoadingContacts(false);
     }
+  };
 
-    return list;
-  }, [realContacts, filterTab, debouncedQuery]);
+  useEffect(() => {
+    loadBackendContacts();
+  }, [currentPage, pageSize, debouncedQuery, filterTab]);
 
-  // Paginação dos contatos
-  const totalPages = Math.max(1, Math.ceil(filteredContacts.length / pageSize));
+  // Contatos exibidos (vindo da página atual retornada pelo backend)
+  const paginatedContacts = serverContacts;
+  const totalPages = Math.max(1, serverTotalPages);
   const safeCurrentPage = Math.min(currentPage, totalPages);
 
-  const paginatedContacts = useMemo(() => {
-    const start = (safeCurrentPage - 1) * pageSize;
-    return filteredContacts.slice(start, start + pageSize);
-  }, [filteredContacts, safeCurrentPage, pageSize]);
-
   const allFilteredSelected =
-    filteredContacts.length > 0 &&
-    filteredContacts.every((c) => selectedIds.includes(c.id));
+    paginatedContacts.length > 0 &&
+    paginatedContacts.every((c) => selectedIds.includes(c.id));
 
-  // Seleção de todos os contatos filtrados
+  // Seleção de todos os contatos da página
   const handleToggleSelectAll = () => {
     if (allFilteredSelected) {
       setSelectedIds([]);
     } else {
-      setSelectedIds(filteredContacts.map((c) => c.id));
+      setSelectedIds(paginatedContacts.map((c) => c.id));
     }
   };
 
@@ -173,6 +168,7 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
         message: `Perfil e configurações salvas para ${editName.trim() || activeContact.name}!`,
       });
       setActiveContact(null);
+      await loadBackendContacts();
       onRefresh();
     } catch (err: any) {
       setFeedback({
@@ -194,6 +190,7 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
         type: 'success',
         message: `${res.count} contatos reais identificados (${res.groupsCount || 0} grupos separados)!`,
       });
+      await loadBackendContacts();
       onRefresh();
     } catch (err: any) {
       setFeedback({
@@ -224,6 +221,7 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
         type: 'success',
         message: 'Contato adicionado com sucesso!',
       });
+      await loadBackendContacts();
       onRefresh();
     } catch (err: any) {
       setFeedback({ type: 'error', message: err.message });
@@ -239,6 +237,7 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
         type: 'success',
         message: `Contato ${contact.name} removido com sucesso.`,
       });
+      await loadBackendContacts();
       onRefresh();
     } catch (err: any) {
       setFeedback({ type: 'error', message: err.message });
@@ -332,7 +331,7 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
             }`}
           >
             <BookUser className="w-3.5 h-3.5" />
-            <span>Agenda do Celular ({savedCount})</span>
+            <span>Agenda do Celular ({serverSavedCount || 0})</span>
           </button>
 
           <button
@@ -346,12 +345,12 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
                 : 'text-slate-400 hover:text-slate-200'
             }`}
           >
-            <span>Todas as Conversas ({realContacts.length})</span>
+            <span>Todas as Conversas ({serverAllCount || 0})</span>
           </button>
         </div>
 
         <span className="text-slate-400 text-[11px]">
-          Mostrando {filteredContacts.length} contato(s) exibido(s)
+          Mostrando {serverTotal} contato(s) encontrado(s) no servidor
         </span>
       </div>
 
@@ -379,12 +378,12 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
             {allFilteredSelected ? (
               <>
                 <CheckSquare className="w-3.5 h-3.5 text-emerald-400" />
-                <span>Desmarcar todos</span>
+                <span>Desmarcar página</span>
               </>
             ) : (
               <>
                 <Square className="w-3.5 h-3.5 text-slate-400" />
-                <span>Selecionar todos ({filteredContacts.length})</span>
+                <span>Selecionar página ({paginatedContacts.length})</span>
               </>
             )}
           </button>
@@ -417,7 +416,12 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
 
       {/* Contact List */}
       <div className="bg-slate-900 border border-slate-800 rounded-3xl shadow-xl overflow-hidden">
-        {filteredContacts.length === 0 ? (
+        {loadingContacts ? (
+          <div className="p-12 text-center space-y-3">
+            <Loader2 className="w-8 h-8 text-emerald-400 animate-spin mx-auto" />
+            <p className="text-xs text-slate-400">Carregando contatos do servidor...</p>
+          </div>
+        ) : paginatedContacts.length === 0 ? (
           <div className="p-12 text-center space-y-3">
             <Users className="w-10 h-10 text-slate-600 mx-auto" />
             <h3 className="text-base font-bold text-slate-300">
@@ -519,7 +523,7 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
         )}
 
         {/* Barra de Paginação */}
-        {filteredContacts.length > pageSize && (
+        {serverTotal > pageSize && (
           <div className="p-4 border-t border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-slate-400 bg-slate-950/50">
             <div>
               Mostrando{' '}
@@ -528,9 +532,9 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
               </strong>{' '}
               a{' '}
               <strong className="text-white">
-                {Math.min(safeCurrentPage * pageSize, filteredContacts.length)}
+                {Math.min(safeCurrentPage * pageSize, serverTotal)}
               </strong>{' '}
-              de <strong className="text-white">{filteredContacts.length}</strong> contatos
+              de <strong className="text-white">{serverTotal}</strong> contatos
             </div>
 
             <div className="flex items-center gap-2">

@@ -51,28 +51,47 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     setFeedback(null);
 
     try {
-      // 1. Atualizar informações de perfil do usuário
-      if (userName.trim()) {
-        await api.updateUser({
-          name: userName.trim(),
-          email: userEmail.trim(),
-        });
+      const cleanName = userName.trim();
+      const cleanEmail = userEmail.trim();
+
+      if (!cleanName) {
+        throw new Error('O nome do usuário não pode estar vazio.');
       }
 
-      // 2. Atualizar configurações de IA
+      // 1. Enviar os dados e 2. Confirmar que o backend salvou
+      const savedUser = await api.updateUser({
+        name: cleanName,
+        email: cleanEmail,
+      });
+
+      if (!savedUser || !savedUser.id) {
+        throw new Error('O servidor não confirmou o salvamento do perfil.');
+      }
+
+      // 3. Recarregar o usuário diretamente do backend
+      const freshUser = await api.getUser();
+
+      // 4. Atualizar o estado local e a interface
+      if (freshUser) {
+        setUserName(freshUser.name || '');
+        setUserEmail(freshUser.email || '');
+      }
+
+      // Atualizar configurações de IA
       await api.updateAISettings({
         enabled: useAI,
       });
 
       setFeedback({
         type: 'success',
-        message: 'Configurações salvas com sucesso!',
+        message: 'Configurações e perfil salvos com sucesso!',
       });
       onRefresh();
     } catch (err: any) {
+      console.error('[Settings] Erro ao salvar perfil:', err);
       setFeedback({
         type: 'error',
-        message: err.message || 'Erro ao salvar configurações.',
+        message: err.message || 'Erro ao persistir configurações do perfil.',
       });
     } finally {
       setSaving(false);

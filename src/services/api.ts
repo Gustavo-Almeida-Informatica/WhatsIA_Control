@@ -14,7 +14,8 @@ import {
   ManualFlow,
 } from '../types';
 
-async function request<T>(url: string, options?: RequestInit): Promise<T> {
+async function request<T>(url: string, options?: RequestInit, retries = 2): Promise<T> {
+  const isGet = !options?.method || options.method.toUpperCase() === 'GET';
   let res: Response;
   try {
     res = await fetch(url, {
@@ -26,8 +27,18 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
       ...options,
     });
   } catch (netErr: any) {
+    if (isGet && retries > 0) {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      return request<T>(url, options, retries - 1);
+    }
     console.error(`[API Network Error] Falha ao conectar em ${url}:`, netErr);
     throw new Error('Não foi possível conectar ao servidor. Verifique a conexão do WhatsApp e tente novamente.');
+  }
+
+  // Handle transient 502/503/504 gateway states with retry on GET
+  if ((res.status === 502 || res.status === 503 || res.status === 504) && isGet && retries > 0) {
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    return request<T>(url, options, retries - 1);
   }
 
   const isMessageEndpoint = url.includes('/messages') || url.includes('/conversations');
@@ -51,6 +62,10 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
       throw new Error(defaultError);
     }
   } else {
+    if (isGet && retries > 0) {
+      await new Promise((resolve) => setTimeout(resolve, 350));
+      return request<T>(url, options, retries - 1);
+    }
     console.warn(`[API Non-JSON Response] URL: ${url}, Status: ${res.status}, Type: ${contentType}`);
     throw new Error(defaultError);
   }
@@ -238,10 +253,6 @@ export const api = {
   // Contact helpers
   toggleContactBlock: (id: string) =>
     request<Contact>(`/api/contacts/${id}/toggle-block`, {
-      method: 'POST',
-    }),
-  toggleContactAutoReply: (id: string) =>
-    request<Contact>(`/api/contacts/${id}/toggle-auto-reply`, {
       method: 'POST',
     }),
   handleManualAction: (

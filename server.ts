@@ -12,6 +12,14 @@ import { Contact } from './src/types';
 
 dotenv.config();
 
+process.on('uncaughtException', (err) => {
+  console.error('[Process Uncaught Exception]:', err);
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('[Process Unhandled Rejection]:', reason);
+});
+
 async function startServer() {
   const app = express();
   const PORT = Number(process.env.PORT) || 3000;
@@ -57,13 +65,31 @@ async function startServer() {
   });
 
   app.put('/api/user', (req, res) => {
-    const updated = db.updateUser(req.body);
-    res.json(updated);
+    try {
+      const { name } = req.body;
+      if (!name || !String(name).trim()) {
+        return res.status(400).json({ success: false, error: 'O nome do usuário é obrigatório.' });
+      }
+      const updated = db.updateUser(req.body);
+      res.json(updated);
+    } catch (err: any) {
+      console.error('[API Error] Falha ao atualizar usuário:', err);
+      res.status(500).json({ success: false, error: err.message || 'Erro ao persistir perfil do usuário.' });
+    }
   });
 
   app.post('/api/user', (req, res) => {
-    const updated = db.updateUser(req.body);
-    res.json(updated);
+    try {
+      const { name } = req.body;
+      if (!name || !String(name).trim()) {
+        return res.status(400).json({ success: false, error: 'O nome do usuário é obrigatório.' });
+      }
+      const updated = db.updateUser(req.body);
+      res.json(updated);
+    } catch (err: any) {
+      console.error('[API Error] Falha ao atualizar usuário:', err);
+      res.status(500).json({ success: false, error: err.message || 'Erro ao persistir perfil do usuário.' });
+    }
   });
 
   // System Stats
@@ -153,13 +179,16 @@ async function startServer() {
     const pageStr = req.query.page as string | undefined;
     const limitStr = req.query.limit as string | undefined;
 
-    if (pageStr && limitStr) {
-      const page = Math.max(1, parseInt(pageStr, 10) || 1);
-      const limit = Math.max(1, parseInt(limitStr, 10) || 25);
+    if (pageStr || limitStr) {
+      const page = Math.max(1, parseInt(pageStr || '1', 10) || 1);
+      const limit = Math.max(1, parseInt(limitStr || '25', 10) || 25);
       const total = allMatching.length;
       const totalPages = Math.ceil(total / limit) || 1;
       const offset = (page - 1) * limit;
       const paginated = allMatching.slice(offset, offset + limit);
+
+      const totalSaved = db.getContacts({ onlySaved: true }).length;
+      const totalAll = db.getContacts({ all: true }).length;
 
       return res.json({
         contacts: paginated,
@@ -167,6 +196,8 @@ async function startServer() {
         page,
         limit,
         totalPages,
+        totalSaved,
+        totalAll,
       });
     }
 
@@ -411,15 +442,6 @@ async function startServer() {
   // POST /api/contacts/:id/toggle-block
   app.post('/api/contacts/:id/toggle-block', (req, res) => {
     const updated = db.toggleContactBlock(req.params.id);
-    if (!updated) {
-      return res.status(404).json({ success: false, error: 'Contato não encontrado.' });
-    }
-    res.json(updated);
-  });
-
-  // POST /api/contacts/:id/toggle-auto-reply
-  app.post('/api/contacts/:id/toggle-auto-reply', (req, res) => {
-    const updated = db.toggleContactAutoReply(req.params.id);
     if (!updated) {
       return res.status(404).json({ success: false, error: 'Contato não encontrado.' });
     }

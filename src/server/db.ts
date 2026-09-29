@@ -122,7 +122,6 @@ function isTechnicalId(id?: string): boolean {
   if (lower === 'status@broadcast') return true;
   if (lower.endsWith('@broadcast')) return true;
   if (lower.endsWith('@newsletter')) return true;
-  if (lower.endsWith('@lid')) return true;
   if (lower.startsWith('server@') || lower.startsWith('0@')) return true;
   return false;
 }
@@ -139,10 +138,50 @@ export interface IPersistenceAdapter {
 export class LocalFilePersistenceAdapter implements IPersistenceAdapter {
   private dataDir: string;
   private dbFile: string;
+  private saveTimeout: NodeJS.Timeout | null = null;
+  private pendingData: DatabaseData | null = null;
 
   constructor(filePath?: string) {
     this.dbFile = filePath || process.env.DATA_FILE_PATH || path.join(process.cwd(), 'data', 'db.json');
     this.dataDir = path.dirname(this.dbFile);
+
+    // Flush any pending data before process terminates
+    process.on('beforeExit', () => this.flush());
+    process.on('SIGTERM', () => this.flush());
+    process.on('SIGINT', () => this.flush());
+  }
+
+  public flush(): void {
+    if (this.saveTimeout) {
+      clearTimeout(this.saveTimeout);
+      this.saveTimeout = null;
+    }
+    if (this.pendingData) {
+      try {
+        if (!fs.existsSync(this.dataDir)) {
+          fs.mkdirSync(this.dataDir, { recursive: true });
+        }
+        fs.writeFileSync(this.dbFile, JSON.stringify(this.pendingData, null, 2), 'utf-8');
+      } catch (err) {
+        console.error('[Storage] Falha ao descarregar arquivo de persistência:', err);
+      }
+      this.pendingData = null;
+    }
+  }
+
+  public flushSync(): void {
+    if (this.saveTimeout) {
+      clearTimeout(this.saveTimeout);
+      this.saveTimeout = null;
+    }
+    const dataToWrite = this.pendingData;
+    if (dataToWrite) {
+      if (!fs.existsSync(this.dataDir)) {
+        fs.mkdirSync(this.dataDir, { recursive: true });
+      }
+      fs.writeFileSync(this.dbFile, JSON.stringify(dataToWrite, null, 2), 'utf-8');
+      this.pendingData = null;
+    }
   }
 
   private sanitizeData(data: DatabaseData): DatabaseData {
@@ -189,6 +228,9 @@ export class LocalFilePersistenceAdapter implements IPersistenceAdapter {
   }
 
   load(): DatabaseData {
+    if (this.pendingData) {
+      return JSON.parse(JSON.stringify(this.pendingData));
+    }
     try {
       if (!fs.existsSync(this.dataDir)) {
         fs.mkdirSync(this.dataDir, { recursive: true });
@@ -230,14 +272,13 @@ export class LocalFilePersistenceAdapter implements IPersistenceAdapter {
   }
 
   save(data: DatabaseData): void {
-    try {
-      if (!fs.existsSync(this.dataDir)) {
-        fs.mkdirSync(this.dataDir, { recursive: true });
-      }
-      fs.writeFileSync(this.dbFile, JSON.stringify(data, null, 2), 'utf-8');
-    } catch (err) {
-      console.error('[Storage] Falha ao gravar arquivo de persistência:', err);
+    this.pendingData = data;
+    if (this.saveTimeout) {
+      clearTimeout(this.saveTimeout);
     }
+    this.saveTimeout = setTimeout(() => {
+      this.flush();
+    }, 150);
   }
 }
 
@@ -280,6 +321,15 @@ class Database {
 
   public persist(): void {
     this.adapter.save(this.data);
+  }
+
+  public persistSync(): void {
+    if (typeof (this.adapter as any).flushSync === 'function') {
+      this.adapter.save(this.data);
+      (this.adapter as any).flushSync();
+    } else {
+      this.adapter.save(this.data);
+    }
   }
 
   // --- GETTERS ---
@@ -372,7 +422,14 @@ class Database {
 
   getConversations(): (Conversation & { contact?: Contact; last_message_preview?: Message })[] {
     return this.data.conversations.map((conv) => {
-      const contact = this.data.contacts.find((c) => c.id === conv.contact_id);
+      let contact = conv.contact_id ? this.data.contacts.find((c) => c.id === conv.contact_id) : undefined;
+      if (!contact && conv.phone) {
+        contact = this.data.contacts.find((c) => phonesMatch(c.phone, conv.phone!));
+      }
+      if (!contact && conv.whatsapp_conversation_id) {
+        contact = this.data.contacts.find((c) => c.whatsapp_id === conv.whatsapp_conversation_id);
+      }
+
       const convMessages = this.data.messages.filter((m) => m.conversation_id === conv.id);
       const lastMsg = convMessages.sort(
         (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
@@ -380,6 +437,8 @@ class Database {
 
       return {
         ...conv,
+        name: conv.name || contact?.name || conv.phone || 'Conversa sem nome',
+        phone: conv.phone || contact?.phone || '',
         contact,
         last_message_preview: lastMsg,
       };
@@ -594,7 +653,23 @@ class Database {
     }
 
     if (isTechnicalId(whatsappId)) {
-      return null as any;
+      return {
+        id: `tech_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+        user_id: 'usr_main_01',
+        whatsapp_id: whatsappId,
+        name: contactData.name || 'Sistema / Broadcast',
+        phone: contactData.phone || '',
+        type: 'individual',
+        blocked: true,
+        auto_reply_disabled: true,
+        mode: 'manual',
+        allow_ai: false,
+        is_my_contact: false,
+        has_conversation: false,
+        tags: [],
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
     }
 
     let existing = this.data.contacts.find((c) => {
@@ -706,20 +781,28 @@ class Database {
 
   // --- MESSAGES & CONVERSATIONS ---
   saveMessage(messageData: {
-    contact_id: string;
+    conversation_id?: string;
+    contact_id?: string;
     sender: 'contact' | 'user' | 'bot';
     content: string;
     whatsapp_message_id?: string;
     status?: Message['status'];
     is_from_ai?: boolean;
   }): Message {
-    let conv = this.data.conversations.find((c) => c.contact_id === messageData.contact_id);
+    let conv: Conversation | undefined;
+    if (messageData.conversation_id) {
+      conv = this.data.conversations.find((c) => c.id === messageData.conversation_id);
+    }
+    if (!conv && messageData.contact_id) {
+      conv = this.data.conversations.find((c) => c.contact_id === messageData.contact_id);
+    }
     if (!conv) {
+      const convId = `conv_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
       conv = {
-        id: `conv_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+        id: convId,
         user_id: 'usr_main_01',
         contact_id: messageData.contact_id,
-        whatsapp_conversation_id: `wa_${messageData.contact_id}`,
+        whatsapp_conversation_id: messageData.contact_id ? `wa_${messageData.contact_id}` : `wa_${convId}`,
         status: 'active',
         last_message_at: new Date().toISOString(),
         created_at: new Date().toISOString(),
@@ -728,6 +811,7 @@ class Database {
       this.data.conversations.push(conv);
     } else {
       conv.last_message_at = new Date().toISOString();
+      conv.last_message_content = messageData.content;
       conv.updated_at = new Date().toISOString();
     }
 
@@ -747,14 +831,16 @@ class Database {
 
     this.data.messages.push(newMsg);
 
-    // Update contact last message info
-    const contact = this.data.contacts.find((c) => c.id === messageData.contact_id);
-    if (contact) {
-      contact.last_message = messageData.content;
-      contact.last_message_time = newMsg.timestamp;
-      contact.last_interaction_at = newMsg.timestamp;
-      if (messageData.sender === 'contact') {
-        contact.unread_count = (contact.unread_count || 0) + 1;
+    // Update contact last message info if contact exists
+    if (messageData.contact_id) {
+      const contact = this.data.contacts.find((c) => c.id === messageData.contact_id);
+      if (contact) {
+        contact.last_message = messageData.content;
+        contact.last_message_time = newMsg.timestamp;
+        contact.last_interaction_at = newMsg.timestamp;
+        if (messageData.sender === 'contact') {
+          contact.unread_count = (contact.unread_count || 0) + 1;
+        }
       }
     }
 
@@ -769,7 +855,7 @@ class Database {
     contact_phone: string;
     message: string;
     direction: 'outgoing' | 'incoming';
-    mode: 'manual' | 'automatic' | 'ai';
+    mode?: 'manual' | 'ai';
     status: 'sent' | 'delivered' | 'read' | 'failed' | 'received';
     whatsapp_message_id?: string;
     error?: string;
@@ -812,14 +898,50 @@ class Database {
     return log;
   }
 
-  findOrCreateConversation(contactId: string): Conversation {
-    let conv = this.data.conversations.find((c) => c.contact_id === contactId);
+  findOrCreateConversation(params: string | {
+    whatsapp_conversation_id?: string;
+    contact_id?: string;
+    name?: string;
+    phone?: string;
+    is_group?: boolean;
+  }): Conversation {
+    if (typeof params === 'string') {
+      const idOrChat = params;
+      let conv = this.data.conversations.find(
+        (c) => c.contact_id === idOrChat || c.whatsapp_conversation_id === idOrChat || c.id === idOrChat
+      );
+      if (!conv) {
+        conv = {
+          id: `conv_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+          user_id: 'usr_main_01',
+          contact_id: idOrChat.startsWith('cnt_') ? idOrChat : undefined,
+          whatsapp_conversation_id: idOrChat,
+          status: 'active',
+          last_message_at: new Date().toISOString(),
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        };
+        this.data.conversations.push(conv);
+        this.persist();
+      }
+      return conv;
+    }
+
+    const { whatsapp_conversation_id, contact_id, name, phone, is_group } = params;
+    let conv = this.data.conversations.find((c) =>
+      (whatsapp_conversation_id && c.whatsapp_conversation_id === whatsapp_conversation_id) ||
+      (contact_id && c.contact_id === contact_id)
+    );
+
     if (!conv) {
       conv = {
         id: `conv_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
         user_id: 'usr_main_01',
-        contact_id: contactId,
-        whatsapp_conversation_id: `wa_${contactId}`,
+        contact_id,
+        whatsapp_conversation_id: whatsapp_conversation_id || `wa_${Date.now()}`,
+        name,
+        phone,
+        is_group: Boolean(is_group),
         status: 'active',
         last_message_at: new Date().toISOString(),
         created_at: new Date().toISOString(),
@@ -827,6 +949,10 @@ class Database {
       };
       this.data.conversations.push(conv);
       this.persist();
+    } else {
+      if (name && !conv.name) conv.name = name;
+      if (phone && !conv.phone) conv.phone = phone;
+      if (contact_id && !conv.contact_id) conv.contact_id = contact_id;
     }
     return conv;
   }
@@ -968,11 +1094,16 @@ class Database {
   }
 
   updateUser(payload: Partial<User>): User {
+    if (!payload.name || !payload.name.trim()) {
+      throw new Error('O nome do usuário é obrigatório.');
+    }
     this.data.user = {
       ...this.data.user,
       ...payload,
+      name: payload.name.trim(),
+      email: payload.email !== undefined ? payload.email.trim() : this.data.user.email,
     };
-    this.persist();
+    this.persistSync();
     return { ...this.data.user };
   }
 
