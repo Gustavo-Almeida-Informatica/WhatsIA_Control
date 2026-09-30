@@ -210,9 +210,9 @@ async function startServer() {
     res.json(db.getGroups());
   });
 
-  // POST /api/contacts (criar ou atualizar contato)
+  // POST /api/contacts (criar ou atualizar contato na agenda)
   app.post('/api/contacts', (req, res) => {
-    const { name, phone, mode, auto_reply_message, allow_ai, automation_enabled, whatsapp_id, type, is_my_contact } = req.body;
+    const { name, phone, mode, allow_ai, whatsapp_id, type, is_my_contact } = req.body;
     if (!name || !phone) {
       return res.status(400).json({ error: 'Nome e telefone são obrigatórios.' });
     }
@@ -221,11 +221,9 @@ async function startServer() {
       phone: phone.trim(),
       whatsapp_id,
       type,
-      is_my_contact: Boolean(is_my_contact),
-      mode: mode || 'manual',
-      auto_reply_message: auto_reply_message || '',
+      is_my_contact: is_my_contact !== undefined ? Boolean(is_my_contact) : true,
+      mode: mode || 'flows',
       allow_ai: Boolean(allow_ai),
-      automation_enabled: automation_enabled !== false,
     });
     res.json(contact);
   });
@@ -241,24 +239,22 @@ async function startServer() {
 
   // POST /api/contact-settings (configuração específica por contato)
   app.post('/api/contact-settings', (req, res) => {
-    const { contact_id, mode, auto_reply_message, allow_ai, automation_enabled, blocked, name } = req.body;
+    const { contact_id, mode, allow_ai, blocked, name, is_my_contact } = req.body;
     if (!contact_id) {
       return res.status(400).json({ error: 'contact_id é obrigatório.' });
     }
 
     const updated = db.updateContactSettings(contact_id, {
       mode,
-      auto_reply_message,
       allow_ai,
-      automation_enabled,
       blocked,
       name,
+      is_my_contact,
     });
 
     if (!updated) {
       return res.status(404).json({ error: 'Contato não encontrado.' });
     }
-
     res.json({
       success: true,
       message: 'Configurações do contato atualizadas com sucesso.',
@@ -370,12 +366,21 @@ async function startServer() {
         return res.status(404).json({ success: false, error: 'Conversa não encontrada.' });
       }
 
-      const contact = db.getContactById(conv.contact_id);
-      if (!contact) {
-        return res.status(404).json({ success: false, error: 'Contato vinculado não encontrado.' });
+      let targetDestination = '';
+      if (conv.contact_id) {
+        const contact = db.getContactById(conv.contact_id);
+        if (contact) {
+          targetDestination = contact.phone || contact.whatsapp_id || contact.id;
+        }
+      }
+      if (!targetDestination) {
+        targetDestination = conv.phone || conv.whatsapp_conversation_id;
+      }
+      if (!targetDestination) {
+        return res.status(400).json({ success: false, error: 'Destino da conversa não identificado.' });
       }
 
-      const sendResult = await whatsappManager.sendManualMessage([contact.phone || contact.id], String(content).trim());
+      const sendResult = await whatsappManager.sendManualMessage([targetDestination], String(content).trim());
       const sentMsg = db.getMessages(conversationId).slice(-1)[0] || {
         id: `msg_${Date.now()}`,
         conversation_id: conversationId,
@@ -419,12 +424,19 @@ async function startServer() {
         }
 
         const conv = db.getConversations().find((c) => c.id === msg.conversation_id || c.id === conversation_id);
-        const contact = conv ? db.getContactById(conv.contact_id) : null;
-        if (!contact) {
-          return res.status(404).json({ success: false, error: 'Contato não localizado para envio.' });
+        let targetPhone = '';
+        if (conv?.contact_id) {
+          const contact = db.getContactById(conv.contact_id);
+          if (contact) targetPhone = contact.phone || contact.id;
+        }
+        if (!targetPhone && conv) {
+          targetPhone = conv.phone || conv.whatsapp_conversation_id;
+        }
+        if (!targetPhone) {
+          return res.status(404).json({ success: false, error: 'Contato/Destino não localizado para envio.' });
         }
 
-        await whatsappManager.sendManualMessage([contact.phone || contact.id], String(textToSend).trim());
+        await whatsappManager.sendManualMessage([targetPhone], String(textToSend).trim());
         return res.json({
           success: true,
           message: 'Mensagem enviada com sucesso',
@@ -465,16 +477,14 @@ async function startServer() {
           whatsapp_id: '5511999999999@c.us',
           type: 'individual',
           mode: 'manual',
-          automation_enabled: true,
           allow_ai: true,
           blocked: false,
-          auto_reply_disabled: false,
           tags: [],
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
         };
       }
-      const evalResult = testRulesEvaluation(contact!, String(message || ''));
+      const evalResult = testRulesEvaluation(contact, String(message || ''));
       res.json(evalResult);
     } catch (err: any) {
       res.status(500).json({ success: false, error: err.message || 'Erro ao avaliar regras' });
@@ -612,9 +622,9 @@ async function startServer() {
   app.post('/api/flows/evaluate-test', (req, res) => {
     try {
       const { contact_id, phone, message } = req.body;
-      let contact: Contact | undefined | null = contact_id ? db.getContactById(contact_id) : null;
+      let contact: Contact | null = contact_id ? db.getContactById(contact_id) || null : null;
       if (!contact && phone) {
-        contact = db.getContactByPhone(phone);
+        contact = db.getContactByPhone(phone) || null;
       }
       if (!contact) {
         contact = {
@@ -628,7 +638,6 @@ async function startServer() {
           is_my_contact: true,
           has_conversation: true,
           blocked: false,
-          auto_reply_disabled: false,
           allow_ai: false,
           tags: [],
           created_at: new Date().toISOString(),

@@ -161,26 +161,9 @@ export function evaluateVisualFlow(
   incomingText: string,
   existingConversationMessages: Message[] = []
 ): FlowEvaluationResult {
-  const manualFlow = db.getManualFlow();
-  const allNodes = manualFlow.nodes || [];
-  const allConnections = manualFlow.connections || [];
-
-  if (allNodes.length === 0) {
-    return { matched: false, reason: 'Nenhum fluxo visual configurado' };
-  }
-
-  // 1. Achar nós de contato que correspondam ao remetente
-  const contactNodes = allNodes.filter((n) => n.type === 'contact');
-  const matchedContactNodes = contactNodes.filter((node) => {
-    if (node.data.applyToAll) return true;
-    if (node.data.contactId && node.data.contactId === contact.id) return true;
-    if (node.data.phone && contact.phone && contact.phone.replace(/\D/g, '').includes(node.data.phone.replace(/\D/g, ''))) return true;
-    if (node.data.contactName && normalizeText(node.data.contactName) === normalizeText(contact.name)) return true;
-    return false;
-  });
-
-  if (matchedContactNodes.length === 0) {
-    return { matched: false, reason: 'Nenhum bloco de contato corresponde a este remetente' };
+  const activeFlows = db.getFlows().filter((f) => f.enabled !== false);
+  if (activeFlows.length === 0) {
+    return { matched: false, reason: 'Nenhum fluxo visual ativo configurado' };
   }
 
   const normIncoming = normalizeText(incomingText);
@@ -195,152 +178,172 @@ export function evaluateVisualFlow(
     triggerValue: string;
     contactNodeId: string;
     messageNodeId: string;
+    flowId?: string;
   }
 
   const candidates: Candidate[] = [];
 
-  for (const cNode of matchedContactNodes) {
-    // Achar conexões que saem do contato
-    const outgoing = allConnections.filter((c) => c.fromNodeId === cNode.id);
+  for (const flow of activeFlows) {
+    const allNodes = flow.nodes || [];
+    const allConnections = flow.connections || [];
+    if (allNodes.length === 0) continue;
 
-    for (const conn of outgoing) {
-      const targetNode = allNodes.find((n) => n.id === conn.toNodeId);
-      if (!targetNode) continue;
+    // 1. Achar nós de contato que correspondam ao remetente neste fluxo
+    const contactNodes = allNodes.filter((n) => n.type === 'contact');
+    const matchedContactNodes = contactNodes.filter((node) => {
+      if (node.data.applyToAll) return true;
+      if (node.data.contactId && node.data.contactId === contact.id) return true;
+      if (node.data.phone && contact.phone && contact.phone.replace(/\D/g, '').includes(node.data.phone.replace(/\D/g, ''))) return true;
+      if (node.data.contactName && normalizeText(node.data.contactName) === normalizeText(contact.name)) return true;
+      return false;
+    });
 
-      // CASO A: Contato conectado a GATILHO (Trigger)
-      if (targetNode.type === 'trigger') {
-        const triggerType = targetNode.data.triggerType || 'any';
-        const triggerVal = targetNode.data.triggerValue || '';
-        const normTriggerVal = normalizeText(triggerVal);
+    for (const cNode of matchedContactNodes) {
+      // Achar conexões que saem do contato
+      const outgoing = allConnections.filter((c) => c.fromNodeId === cNode.id);
 
-        let triggerMatched = false;
-        let priority = 4;
+      for (const conn of outgoing) {
+        const targetNode = allNodes.find((n) => n.id === conn.toNodeId);
+        if (!targetNode) continue;
 
-        if (triggerType === 'exact') {
-          triggerMatched = normIncoming === normTriggerVal;
-          priority = 1;
-        } else if (triggerType === 'first_message') {
-          triggerMatched = isFirstMessage;
-          priority = 2;
-        } else if (triggerType === 'contains') {
-          if (!normTriggerVal) {
+        // CASO A: Contato conectado a GATILHO (Trigger)
+        if (targetNode.type === 'trigger') {
+          const triggerType = targetNode.data.triggerType || 'any';
+          const triggerVal = targetNode.data.triggerValue || '';
+          const normTriggerVal = normalizeText(triggerVal);
+
+          let triggerMatched = false;
+          let priority = 4;
+
+          if (triggerType === 'exact') {
+            triggerMatched = normIncoming === normTriggerVal;
+            priority = 1;
+          } else if (triggerType === 'first_message') {
+            triggerMatched = isFirstMessage;
+            priority = 2;
+          } else if (triggerType === 'contains') {
+            if (!normTriggerVal) {
+              triggerMatched = true;
+            } else {
+              const keywords = normTriggerVal.split(',').map((k) => k.trim()).filter(Boolean);
+              triggerMatched = keywords.some((kw) => normIncoming.includes(kw));
+            }
+            priority = 3;
+          } else if (triggerType === 'starts_with') {
+            triggerMatched = normIncoming.startsWith(normTriggerVal);
+            priority = 3;
+          } else if (triggerType === 'ends_with') {
+            triggerMatched = normIncoming.endsWith(normTriggerVal);
+            priority = 3;
+          } else if (triggerType === 'multiple_words') {
+            if (!normTriggerVal) {
+              triggerMatched = true;
+            } else {
+              const words = normTriggerVal.split(/[,;\s]+/).map((w) => w.trim()).filter(Boolean);
+              triggerMatched = words.length > 0 && words.every((w) => normIncoming.includes(w));
+            }
+            priority = 2;
+          } else if (triggerType === 'specific_contact') {
+            if (!normTriggerVal) {
+              triggerMatched = true;
+            } else {
+              const isIdMatch = contact.id === triggerVal;
+              const isNameMatch = normalizeText(contact.name).includes(normTriggerVal);
+              const isPhoneMatch = contact.phone.replace(/\D/g, '').includes(normTriggerVal.replace(/\D/g, ''));
+              triggerMatched = isIdMatch || isNameMatch || isPhoneMatch;
+            }
+            priority = 1;
+          } else if (triggerType === 'new_message' || triggerType === 'any') {
             triggerMatched = true;
-          } else {
-            const keywords = normTriggerVal.split(',').map((k) => k.trim()).filter(Boolean);
-            triggerMatched = keywords.some((kw) => normIncoming.includes(kw));
+            priority = 4;
           }
-          priority = 3;
-        } else if (triggerType === 'starts_with') {
-          triggerMatched = normIncoming.startsWith(normTriggerVal);
-          priority = 3;
-        } else if (triggerType === 'ends_with') {
-          triggerMatched = normIncoming.endsWith(normTriggerVal);
-          priority = 3;
-        } else if (triggerType === 'multiple_words') {
-          if (!normTriggerVal) {
-            triggerMatched = true;
-          } else {
-            const words = normTriggerVal.split(/[,;\s]+/).map((w) => w.trim()).filter(Boolean);
-            triggerMatched = words.length > 0 && words.every((w) => normIncoming.includes(w));
-          }
-          priority = 2;
-        } else if (triggerType === 'specific_contact') {
-          if (!normTriggerVal) {
-            triggerMatched = true;
-          } else {
-            const isIdMatch = contact.id === triggerVal;
-            const isNameMatch = normalizeText(contact.name).includes(normTriggerVal);
-            const isPhoneMatch = contact.phone.replace(/\D/g, '').includes(normTriggerVal.replace(/\D/g, ''));
-            triggerMatched = isIdMatch || isNameMatch || isPhoneMatch;
-          }
-          priority = 1;
-        } else if (triggerType === 'new_message' || triggerType === 'any') {
-          triggerMatched = true;
-          priority = 4;
-        }
 
-        if (!triggerMatched) continue;
+          if (!triggerMatched) continue;
 
-        // Se o gatilho deu match, buscar próximos nós conectados
-        const triggerOutgoing = allConnections.filter((c) => c.fromNodeId === targetNode.id);
+          // Se o gatilho deu match, buscar próximos nós conectados
+          const triggerOutgoing = allConnections.filter((c) => c.fromNodeId === targetNode.id);
 
-        for (const tConn of triggerOutgoing) {
-          const nextNode = allNodes.find((n) => n.id === tConn.toNodeId);
-          if (!nextNode) continue;
+          for (const tConn of triggerOutgoing) {
+            const nextNode = allNodes.find((n) => n.id === tConn.toNodeId);
+            if (!nextNode) continue;
 
-          // Se for CONDIÇÃO:
-          if (nextNode.type === 'condition') {
-            const condType = nextNode.data.conditionType || 'not_blocked';
-            let condPassed = true;
+            // Se for CONDIÇÃO:
+            if (nextNode.type === 'condition') {
+              const condType = nextNode.data.conditionType || 'not_blocked';
+              let condPassed = true;
 
-            if (condType === 'time_range' && nextNode.data.timeStart && nextNode.data.timeEnd) {
-              const now = new Date();
-              const curMins = now.getHours() * 60 + now.getMinutes();
-              const [sH, sM] = nextNode.data.timeStart.split(':').map(Number);
-              const [eH, eM] = nextNode.data.timeEnd.split(':').map(Number);
-              const startM = sH * 60 + (sM || 0);
-              const endM = eH * 60 + (eM || 0);
+              if (condType === 'time_range' && nextNode.data.timeStart && nextNode.data.timeEnd) {
+                const now = new Date();
+                const curMins = now.getHours() * 60 + now.getMinutes();
+                const [sH, sM] = nextNode.data.timeStart.split(':').map(Number);
+                const [eH, eM] = nextNode.data.timeEnd.split(':').map(Number);
+                const startM = sH * 60 + (sM || 0);
+                const endM = eH * 60 + (eM || 0);
 
-              if (startM <= endM) {
-                condPassed = curMins >= startM && curMins <= endM;
-              } else {
-                condPassed = curMins >= startM || curMins <= endM;
+                if (startM <= endM) {
+                  condPassed = curMins >= startM && curMins <= endM;
+                } else {
+                  condPassed = curMins >= startM || curMins <= endM;
+                }
+              } else if (condType === 'days_of_week' && nextNode.data.daysOfWeek && nextNode.data.daysOfWeek.length > 0) {
+                const curDay = new Date().getDay();
+                condPassed = nextNode.data.daysOfWeek.includes(curDay);
+              } else if (condType === 'only_saved') {
+                condPassed = Boolean(contact.is_my_contact);
+              } else if (condType === 'not_blocked') {
+                condPassed = !contact.blocked;
               }
-            } else if (condType === 'days_of_week' && nextNode.data.daysOfWeek && nextNode.data.daysOfWeek.length > 0) {
-              const curDay = new Date().getDay();
-              condPassed = nextNode.data.daysOfWeek.includes(curDay);
-            } else if (condType === 'only_saved') {
-              condPassed = Boolean(contact.is_my_contact);
-            } else if (condType === 'not_blocked') {
-              condPassed = !contact.blocked;
+
+              if (!condPassed) continue;
+
+              // Seguir para a resposta conectada à condição
+              const condOutgoing = allConnections.filter((c) => c.fromNodeId === nextNode.id);
+              for (const cConn of condOutgoing) {
+                const respNode = allNodes.find((n) => n.id === cConn.toNodeId && (n.type === 'message' || n.type === 'response'));
+                if (respNode && respNode.data.text && respNode.data.text.trim()) {
+                  candidates.push({
+                    priority,
+                    replyText: respNode.data.text.trim(),
+                    triggerType,
+                    triggerValue: triggerVal,
+                    contactNodeId: cNode.id,
+                    messageNodeId: respNode.id,
+                    flowId: flow.id,
+                  });
+                }
+              }
             }
 
-            if (!condPassed) continue;
-
-            // Seguir para a resposta conectada à condição
-            const condOutgoing = allConnections.filter((c) => c.fromNodeId === nextNode.id);
-            for (const cConn of condOutgoing) {
-              const respNode = allNodes.find((n) => n.id === cConn.toNodeId && (n.type === 'message' || n.type === 'response'));
-              if (respNode && respNode.data.text && respNode.data.text.trim()) {
+            // Se o gatilho estiver diretamente conectado à RESPOSTA / MENSAGEM:
+            if (nextNode.type === 'message' || nextNode.type === 'response') {
+              if (nextNode.data.text && nextNode.data.text.trim()) {
                 candidates.push({
                   priority,
-                  replyText: respNode.data.text.trim(),
+                  replyText: nextNode.data.text.trim(),
                   triggerType,
                   triggerValue: triggerVal,
                   contactNodeId: cNode.id,
-                  messageNodeId: respNode.id,
+                  messageNodeId: nextNode.id,
+                  flowId: flow.id,
                 });
               }
             }
           }
-
-          // Se o gatilho estiver diretamente conectado à RESPOSTA / MENSAGEM:
-          if (nextNode.type === 'message' || nextNode.type === 'response') {
-            if (nextNode.data.text && nextNode.data.text.trim()) {
-              candidates.push({
-                priority,
-                replyText: nextNode.data.text.trim(),
-                triggerType,
-                triggerValue: triggerVal,
-                contactNodeId: cNode.id,
-                messageNodeId: nextNode.id,
-              });
-            }
-          }
         }
-      }
 
-      // CASO B: Contato diretamente conectado à RESPOSTA / MENSAGEM (Retrocompatibilidade)
-      if (targetNode.type === 'message' || targetNode.type === 'response') {
-        if (targetNode.data.text && targetNode.data.text.trim()) {
-          candidates.push({
-            priority: 4, // 'any' priority
-            replyText: targetNode.data.text.trim(),
-            triggerType: 'any',
-            triggerValue: '',
-            contactNodeId: cNode.id,
-            messageNodeId: targetNode.id,
-          });
+        // CASO B: Contato diretamente conectado à RESPOSTA / MENSAGEM (Retrocompatibilidade)
+        if (targetNode.type === 'message' || targetNode.type === 'response') {
+          if (targetNode.data.text && targetNode.data.text.trim()) {
+            candidates.push({
+              priority: 4, // 'any' priority
+              replyText: targetNode.data.text.trim(),
+              triggerType: 'any',
+              triggerValue: '',
+              contactNodeId: cNode.id,
+              messageNodeId: targetNode.id,
+              flowId: flow.id,
+            });
+          }
         }
       }
     }
@@ -479,11 +482,9 @@ export function testRulesEvaluation(contact: Contact, incomingMessage: string): 
     would_use_ai,
     simulated_response,
     simulated_reply: simulated_response,
-    would_be_blocked: contact.blocked || contact.auto_reply_disabled || stats.automation_paused,
+    would_be_blocked: contact.blocked || stats.automation_paused,
     block_reason: contact.blocked
       ? 'Contato bloqueado pelo usuário'
-      : contact.auto_reply_disabled
-      ? 'Auto-resposta desativada para este contato'
       : stats.automation_paused
       ? 'Pausa de emergência ativa no sistema'
       : undefined,
@@ -537,24 +538,7 @@ export async function processIncomingMessage(params: {
     return { actionTaken: 'Ignorado: Contato Bloqueado', isAi: false };
   }
 
-  // 3. Check if auto reply is disabled for this specific contact ("Não responder automaticamente a este contato")
-  if (contact.auto_reply_disabled) {
-    db.addLog({
-      user_id: contact.user_id,
-      message_id: incomingMsg.id,
-      contact_id: contact.id,
-      contact_name: contact.name,
-      contact_phone: contact.phone,
-      action: 'Automação desativada para este contato',
-      result: 'ignored_rule',
-      details: `O contato ${contact.name} possui a flag "Não responder automaticamente" ativada. Mensagem mantida para operador humano.`,
-      is_ai: false,
-      is_demo: isDemo,
-    });
-    return { actionTaken: 'Ignorado: Automação desativada para este contato', isAi: false };
-  }
-
-  // 4. Check emergency pause status ("PAUSAR TODA AUTOMAÇÃO")
+  // 3. Check emergency pause status ("PAUSAR TODA AUTOMAÇÃO")
   if (stats.automation_paused) {
     db.addLog({
       user_id: contact.user_id,
@@ -670,7 +654,6 @@ export interface UnifiedRuleEvaluationResult {
   actionType?: string;
   isAi?: boolean;
   blocked?: boolean;
-  autoReplyDisabled?: boolean;
   paused?: boolean;
   reason?: string;
 }
@@ -702,17 +685,7 @@ export function evaluateRulesAndFlow(
     };
   }
 
-  // 3. Check auto-reply disabled for this specific contact
-  if (contact.auto_reply_disabled) {
-    return {
-      matched: false,
-      source: 'none',
-      autoReplyDisabled: true,
-      reason: 'Auto-resposta desativada para este contato.',
-    };
-  }
-
-  // 4. Evaluate active Rules from db.getRules()
+  // 3. Evaluate active Rules from db.getRules()
   const rules = db.getRules().filter((r) => r.enabled && (r.is_active ?? true));
   rules.sort((a, b) => (a.priority || 999) - (b.priority || 999));
 

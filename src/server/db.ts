@@ -187,6 +187,7 @@ export class LocalFilePersistenceAdapter implements IPersistenceAdapter {
   private sanitizeData(data: DatabaseData): DatabaseData {
     if (!data.groups) data.groups = [];
     if (!data.contacts) data.contacts = [];
+    if (!data.conversations) data.conversations = [];
 
     const realContacts: Contact[] = [];
     const seenPhones = new Set<string>();
@@ -198,7 +199,6 @@ export class LocalFilePersistenceAdapter implements IPersistenceAdapter {
             id: c.id,
             whatsapp_id: c.whatsapp_id,
             name: c.name,
-            auto_reply_disabled: true,
             created_at: c.created_at || new Date().toISOString(),
             updated_at: c.updated_at || new Date().toISOString(),
           });
@@ -213,6 +213,26 @@ export class LocalFilePersistenceAdapter implements IPersistenceAdapter {
       const clean = normalizePhone(c.phone);
       if (!clean || clean.length < 8) continue;
 
+      // REGRA: A lista de contatos deve conter EXCLUSIVAMENTE contatos reais da agenda (is_my_contact === true)!
+      // Se não for contato salvo, migra para conversas e não polui data.contacts.
+      if (!c.is_my_contact) {
+        if (!data.conversations.some((cv) => cv.phone === c.phone || cv.whatsapp_conversation_id === c.whatsapp_id)) {
+          data.conversations.push({
+            id: `conv_${c.id}`,
+            user_id: c.user_id || 'usr_main_01',
+            whatsapp_conversation_id: c.whatsapp_id,
+            name: c.name,
+            phone: c.phone,
+            is_group: false,
+            status: 'active',
+            last_message_at: c.last_message_time || c.updated_at || new Date().toISOString(),
+            created_at: c.created_at || new Date().toISOString(),
+            updated_at: c.updated_at || new Date().toISOString(),
+          });
+        }
+        continue;
+      }
+
       if (seenPhones.has(clean)) {
         continue;
       }
@@ -220,6 +240,8 @@ export class LocalFilePersistenceAdapter implements IPersistenceAdapter {
       realContacts.push({
         ...c,
         type: 'individual',
+        mode: c.mode === 'ai' ? 'ai' : c.mode === 'manual' ? 'manual' : 'flows',
+        is_my_contact: true,
       });
     }
 
@@ -401,7 +423,6 @@ class Database {
       unread_count: groupData.unread_count || 0,
       last_message: groupData.last_message,
       last_message_time: groupData.last_message_time,
-      auto_reply_disabled: groupData.auto_reply_disabled ?? true,
       is_read_only: groupData.is_read_only || false,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
@@ -574,6 +595,7 @@ class Database {
     const updated: ManualFlow = {
       id: flowData.id || current.id || 'flow_default',
       name: flowData.name || current.name || 'Fluxo Manual Principal',
+      enabled: flowData.enabled !== undefined ? flowData.enabled : (current.enabled ?? true),
       nodes: Array.isArray(flowData.nodes) ? flowData.nodes : current.nodes || [],
       connections: Array.isArray(flowData.connections) ? flowData.connections : current.connections || [],
       updated_at: new Date().toISOString(),
@@ -605,7 +627,50 @@ class Database {
   }
 
   saveFlow(flowData: Partial<ManualFlow>): ManualFlow {
-    return this.saveManualFlow(flowData);
+    if (!flowData.id || flowData.id === this.data.manual_flow?.id || flowData.id === 'flow_default') {
+      return this.saveManualFlow(flowData);
+    }
+    if (!Array.isArray(this.data.flows)) {
+      this.data.flows = [];
+    }
+    const idx = this.data.flows.findIndex((f) => f.id === flowData.id);
+    const existing = idx >= 0 ? this.data.flows[idx] : null;
+    const updated: ManualFlow = {
+      id: flowData.id,
+      name: flowData.name || existing?.name || 'Fluxo de Atendimento',
+      enabled: flowData.enabled !== undefined ? flowData.enabled : (existing?.enabled ?? true),
+      nodes: Array.isArray(flowData.nodes) ? flowData.nodes : existing?.nodes || [],
+      connections: Array.isArray(flowData.connections) ? flowData.connections : existing?.connections || [],
+      updated_at: new Date().toISOString(),
+    };
+    if (idx >= 0) {
+      this.data.flows[idx] = updated;
+    } else {
+      this.data.flows.push(updated);
+    }
+    this.persist();
+    return JSON.parse(JSON.stringify(updated));
+  }
+
+  toggleFlow(id: string, enabled?: boolean): ManualFlow | null {
+    if (!Array.isArray(this.data.flows)) {
+      this.data.flows = [];
+    }
+    let flow = this.data.flows.find((f) => f.id === id);
+    if (!flow && this.data.manual_flow?.id === id) {
+      flow = this.data.manual_flow;
+    }
+    if (flow) {
+      flow.enabled = enabled !== undefined ? enabled : !(flow.enabled ?? true);
+      flow.updated_at = new Date().toISOString();
+      if (this.data.manual_flow?.id === id) {
+        this.data.manual_flow.enabled = flow.enabled;
+        this.data.manual_flow.updated_at = flow.updated_at;
+      }
+      this.persist();
+      return JSON.parse(JSON.stringify(flow));
+    }
+    return null;
   }
 
   deleteFlow(id: string): boolean {
@@ -643,8 +708,7 @@ class Database {
         phone: contactData.phone,
         type: 'group',
         blocked: false,
-        auto_reply_disabled: true,
-        mode: 'manual',
+        mode: 'flows',
         allow_ai: false,
         tags: [],
         created_at: new Date().toISOString(),
@@ -661,7 +725,6 @@ class Database {
         phone: contactData.phone || '',
         type: 'individual',
         blocked: true,
-        auto_reply_disabled: true,
         mode: 'manual',
         allow_ai: false,
         is_my_contact: false,
@@ -694,11 +757,23 @@ class Database {
           ? contactData.possui_conversa
           : existing.has_conversation ?? false;
 
+      // Se explicitamente marcado como não salvo, remove de data.contacts
+      if (contactData.is_my_contact === false) {
+        this.data.contacts = this.data.contacts.filter((c) => c.id !== existing!.id);
+        this.persist();
+        return {
+          ...existing,
+          ...contactData,
+          is_my_contact: false,
+        };
+      }
+
       Object.assign(existing, {
         ...contactData,
         name: bestName,
         type: 'individual',
-        is_my_contact: contactData.is_my_contact ?? existing.is_my_contact ?? false,
+        mode: contactData.mode || existing.mode || 'flows',
+        is_my_contact: true,
         has_conversation: hasConv,
         possui_conversa: hasConv,
         updated_at: new Date().toISOString(),
@@ -714,6 +789,28 @@ class Database {
     const isSaved = Boolean(contactData.is_my_contact);
     const hasConv = Boolean(contactData.has_conversation || contactData.possui_conversa);
 
+    // REGRA DE OURO: Somente insere em data.contacts se is_my_contact === true!
+    if (!isSaved) {
+      return {
+        id: contactData.id || `unsaved_${cleanNum}`,
+        user_id: 'usr_main_01',
+        whatsapp_id: whatsappId || `${cleanNum}@c.us`,
+        name: contactData.name || cleanNum,
+        phone: formattedPhone,
+        type: 'individual',
+        blocked: false,
+        mode: contactData.mode || 'flows',
+        allow_ai: false,
+        is_my_contact: false,
+        has_conversation: hasConv,
+        possui_conversa: hasConv,
+        tags: contactData.tags || [],
+        unread_count: 0,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+    }
+
     const newContact: Contact = {
       id: contactData.id || `cnt_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
       user_id: 'usr_main_01',
@@ -722,12 +819,9 @@ class Database {
       phone: formattedPhone,
       type: 'individual',
       blocked: contactData.blocked || false,
-      auto_reply_disabled: contactData.auto_reply_disabled || false,
-      automation_enabled: contactData.automation_enabled ?? false,
-      mode: 'manual', // Modo exclusivo: manual com fluxos visuais
-      auto_reply_message: contactData.auto_reply_message || '',
+      mode: contactData.mode || 'flows',
       allow_ai: contactData.allow_ai || false,
-      is_my_contact: isSaved,
+      is_my_contact: true,
       has_conversation: hasConv,
       possui_conversa: hasConv,
       tags: contactData.tags || [],
@@ -744,10 +838,8 @@ class Database {
   updateContactSettings(
     contactId: string,
     settings: {
-      mode?: 'manual';
-      automation_enabled?: boolean;
+      mode?: 'manual' | 'flows' | 'ai';
       allow_ai?: boolean;
-      auto_reply_message?: string;
       blocked?: boolean;
       name?: string;
       is_my_contact?: boolean;
@@ -756,10 +848,8 @@ class Database {
     const contact = this.data.contacts.find((c) => c.id === contactId);
     if (!contact) return null;
 
-    contact.mode = 'manual';
-    if (settings.automation_enabled !== undefined) contact.automation_enabled = settings.automation_enabled;
+    if (settings.mode !== undefined) contact.mode = settings.mode;
     if (settings.allow_ai !== undefined) contact.allow_ai = settings.allow_ai;
-    if (settings.auto_reply_message !== undefined) contact.auto_reply_message = settings.auto_reply_message;
     if (settings.blocked !== undefined) contact.blocked = settings.blocked;
     if (settings.name !== undefined && settings.name.trim().length > 0) contact.name = settings.name.trim();
     if (settings.is_my_contact !== undefined) contact.is_my_contact = settings.is_my_contact;
@@ -864,6 +954,7 @@ class Database {
       id: `hist_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
       user_id: 'usr_main_01',
       ...record,
+      mode: record.mode || 'manual',
       created_at: new Date().toISOString(),
     };
     this.data.history.push(item);
@@ -1069,17 +1160,6 @@ class Database {
     const contact = this.data.contacts.find((c) => c.id === contactId);
     if (contact) {
       contact.blocked = !contact.blocked;
-      contact.updated_at = new Date().toISOString();
-      this.persist();
-      return contact;
-    }
-    return null;
-  }
-
-  toggleContactAutoReply(contactId: string): Contact | null {
-    const contact = this.data.contacts.find((c) => c.id === contactId);
-    if (contact) {
-      contact.auto_reply_disabled = !contact.auto_reply_disabled;
       contact.updated_at = new Date().toISOString();
       this.persist();
       return contact;

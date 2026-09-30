@@ -86,6 +86,7 @@ export interface FlowConnection {
 export interface ManualFlow {
   id: string;
   name: string;
+  enabled?: boolean;
   nodes: FlowNode[];
   connections: FlowConnection[];
   updated_at: string;
@@ -99,10 +100,7 @@ export interface Contact {
   phone: string;
   type: ContactType;
   blocked: boolean;
-  auto_reply_disabled: boolean; // "Não responder automaticamente a este contato"
-  automation_enabled?: boolean; // Habilitado para fluxo/regras
-  mode: 'manual'; // Modo exclusivo: manual com fluxos visuais
-  auto_reply_message?: string; // Mensagem personalizada do fluxo configurada pelo usuário
+  mode: 'manual' | 'flows' | 'ai';
   allow_ai: boolean; // Se a IA tem permissão para responder a este contato (padrão false, estritamente desativada por padrão)
   notes?: string;
   tags: string[];
@@ -125,7 +123,6 @@ export interface GroupChat {
   unread_count?: number;
   last_message?: string;
   last_message_time?: string;
-  auto_reply_disabled?: boolean;
   is_read_only?: boolean;
   created_at: string;
   updated_at: string;

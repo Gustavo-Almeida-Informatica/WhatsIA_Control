@@ -57,10 +57,8 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
   const [activeContact, setActiveContact] = useState<Contact | null>(null);
   const [editName, setEditName] = useState('');
   const [editIsSaved, setEditIsSaved] = useState(false);
-  const mode = 'manual';
-  const [automationEnabled, setAutomationEnabled] = useState(true);
+  const [editMode, setEditMode] = useState<'manual' | 'flows' | 'ai'>('manual');
   const [allowAi, setAllowAi] = useState(false);
-  const [autoReplyMessage, setAutoReplyMessage] = useState('');
 
   // Modal adicionar contato manual
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
@@ -140,9 +138,8 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
     setActiveContact(contact);
     setEditName(contact.name || '');
     setEditIsSaved(Boolean(contact.is_my_contact));
-    setAutomationEnabled(contact.automation_enabled ?? false);
+    setEditMode(contact.mode || 'manual');
     setAllowAi(contact.allow_ai || false);
-    setAutoReplyMessage(contact.auto_reply_message || '');
   };
 
   // Salvar configuração do contato
@@ -157,10 +154,8 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
         contact_id: activeContact.id,
         name: editName.trim() || activeContact.name,
         is_my_contact: editIsSaved,
-        mode: 'manual',
-        automation_enabled: automationEnabled,
+        mode: editMode,
         allow_ai: allowAi,
-        auto_reply_message: autoReplyMessage,
       });
 
       setFeedback({
@@ -212,7 +207,6 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
         name: addName.trim(),
         phone: addPhone.trim(),
         mode: 'manual',
-        automation_enabled: false,
       });
       setIsAddModalOpen(false);
       setAddName('');
@@ -481,13 +475,17 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
                     </div>
                   </div>
 
-                  {/* Middle / Right: Auto reply preview & Actions */}
+                  {/* Middle / Right: Mode badge & Actions */}
                   <div className="flex items-center justify-between sm:justify-end gap-2.5 pl-8 sm:pl-0">
-                    {contact.auto_reply_message ? (
-                      <span className="text-[11px] text-slate-400 max-w-xs truncate hidden lg:block bg-slate-950 px-3 py-1 rounded-lg border border-slate-800 font-mono">
-                        Auto: &ldquo;{contact.auto_reply_message}&rdquo;
-                      </span>
-                    ) : null}
+                    <span className={`text-[11px] px-2.5 py-1 rounded-lg border font-mono font-medium hidden sm:inline-block ${
+                      contact.mode === 'flows'
+                        ? 'bg-emerald-950/80 text-emerald-300 border-emerald-800'
+                        : contact.mode === 'ai'
+                        ? 'bg-purple-950/80 text-purple-300 border-purple-800'
+                        : 'bg-slate-900 text-slate-300 border-slate-800'
+                    }`}>
+                      {contact.mode === 'flows' ? '⚡ FLUXOS' : contact.mode === 'ai' ? '✨ IA' : '🖐 MANUAL'}
+                    </span>
 
                     {onOpenConversation && (
                       <button
@@ -616,17 +614,54 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
                 </button>
               </div>
 
-              {/* Modo: Manual (Padrão e Exclusivo) */}
-              <div className="p-3.5 bg-slate-950 rounded-xl border border-slate-800 flex items-center justify-between">
-                <div>
-                  <strong className="block text-slate-200 font-semibold">Modo de Operação:</strong>
-                  <span className="text-[11px] text-slate-400">
-                    Respostas controladas via Diagrama de Fluxo ou envio direto.
-                  </span>
+              {/* Modo: MANUAL / FLUXOS / IA */}
+              <div className="p-3.5 bg-slate-950 rounded-xl border border-slate-800 space-y-2">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <strong className="block text-slate-200 font-semibold">Modo de Operação:</strong>
+                    <span className="text-[11px] text-slate-400">
+                      Escolha como este contato será atendido no sistema.
+                    </span>
+                  </div>
                 </div>
-                <span className="px-3 py-1 rounded-full font-bold text-[11px] bg-slate-800 text-slate-200 border border-slate-700">
-                  Modo Manual
-                </span>
+                <div className="grid grid-cols-3 gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => setEditMode('manual')}
+                    className={`py-2 px-2 rounded-xl text-xs font-semibold border transition-all ${
+                      editMode === 'manual'
+                        ? 'bg-blue-950/80 text-blue-300 border-blue-600 shadow-sm'
+                        : 'bg-slate-900 text-slate-400 border-slate-800 hover:bg-slate-800'
+                    }`}
+                  >
+                    🖐 MANUAL
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEditMode('flows')}
+                    className={`py-2 px-2 rounded-xl text-xs font-semibold border transition-all ${
+                      editMode === 'flows'
+                        ? 'bg-emerald-950/80 text-emerald-300 border-emerald-600 shadow-sm'
+                        : 'bg-slate-900 text-slate-400 border-slate-800 hover:bg-slate-800'
+                    }`}
+                  >
+                    ⚡ FLUXOS
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditMode('ai');
+                      setAllowAi(true);
+                    }}
+                    className={`py-2 px-2 rounded-xl text-xs font-semibold border transition-all ${
+                      editMode === 'ai'
+                        ? 'bg-purple-950/80 text-purple-300 border-purple-600 shadow-sm'
+                        : 'bg-slate-900 text-slate-400 border-slate-800 hover:bg-slate-800'
+                    }`}
+                  >
+                    ✨ IA
+                  </button>
+                </div>
               </div>
 
               {/* IA ON/OFF */}
@@ -637,7 +672,7 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
                     Inteligência Artificial (IA):
                   </strong>
                   <span className="text-[11px] text-slate-400">
-                    Desativada por padrão. Ative apenas se autorizar sugestões de IA para este contato.
+                    Permitir que a IA gere respostas automáticas para este contato.
                   </span>
                 </div>
                 <button
@@ -653,21 +688,8 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
                 </button>
               </div>
 
-              {/* Mensagem configurada do fluxo manual */}
-              <div className="space-y-1.5">
-                <label className="block font-semibold text-slate-300">
-                  Mensagem configurada para este contato:
-                </label>
-                <textarea
-                  rows={3}
-                  placeholder="[Digite a mensagem configurada para este contato...]"
-                  value={autoReplyMessage}
-                  onChange={(e) => setAutoReplyMessage(e.target.value)}
-                  className="w-full p-3 bg-slate-950 border border-slate-800 rounded-xl text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500 font-sans"
-                />
-                <span className="text-[10px] text-slate-500">
-                  * Você também pode configurar esta mensagem conectando o bloco [ {activeContact.name} ] no Diagrama de Fluxo Manual.
-                </span>
+              <div className="p-3 bg-slate-950/60 rounded-xl border border-slate-800/80 text-[11px] text-slate-400">
+                💡 Para configurar regras de atendimento automáticas (palavra exata, primeira mensagem, contém texto), acesse a aba <strong className="text-emerald-400">Diagrama de Fluxo</strong> e adicione gatilhos e respostas para <strong className="text-slate-200">{activeContact.name}</strong>.
               </div>
 
               {/* Actions */}

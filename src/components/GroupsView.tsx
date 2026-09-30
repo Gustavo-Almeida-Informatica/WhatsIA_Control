@@ -160,8 +160,8 @@ export const GroupsView: React.FC<GroupsViewProps> = ({
                 ) : null}
 
                 <div className="flex items-center justify-between pt-2 border-t border-slate-900 text-xs">
-                  <span className="text-amber-400 text-[11px]">
-                    Auto-Resposta: {grp.auto_reply_disabled ? 'Desativada (Seguro)' : 'Ativada'}
+                  <span className="text-slate-400 text-[11px]">
+                    Proteção: Respostas automáticas desativadas em grupos
                   </span>
                   {onOpenConversation && (
                     <button

@@ -179,10 +179,8 @@ export const api = {
     }),
   updateContactSettings: (data: {
     contact_id: string;
-    mode?: 'manual';
-    automation_enabled?: boolean;
+    mode?: 'manual' | 'flows' | 'ai';
     allow_ai?: boolean;
-    auto_reply_message?: string;
     blocked?: boolean;
     name?: string;
     is_my_contact?: boolean;

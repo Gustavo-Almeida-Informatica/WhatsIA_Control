@@ -140,16 +140,6 @@ export const ConversationsView: React.FC<ConversationsViewProps> = ({
     }
   };
 
-  const handleToggleAutoReply = async () => {
-    if (!contact) return;
-    try {
-      await api.toggleContactAutoReply(contact.id);
-      onRefresh();
-    } catch (err: any) {
-      alert(err.message);
-    }
-  };
-
   const handleInsertCanned = (content: string) => {
     setInputContent((prev) => (prev ? `${prev} ${content}` : content));
     setShowCannedModal(false);
@@ -186,7 +176,6 @@ export const ConversationsView: React.FC<ConversationsViewProps> = ({
               const cName = conv.contact?.name || 'Contato Sem Nome';
               const cPhone = conv.contact?.phone || '';
               const isBlocked = conv.contact?.blocked;
-              const isAutoDisabled = conv.contact?.auto_reply_disabled;
               const hasManualPending = conv.status === 'pending_manual';
 
               return (
@@ -236,9 +225,15 @@ export const ConversationsView: React.FC<ConversationsViewProps> = ({
                           Aprovação Pendente
                         </span>
                       )}
-                      {isAutoDisabled && (
-                        <span className="px-1.5 py-0.2 rounded text-[9px] font-medium bg-amber-950 text-amber-300 border border-amber-800">
-                          Sem Auto-Resposta
+                      {conv.contact?.mode && (
+                        <span className={`px-1.5 py-0.2 rounded text-[9px] font-mono font-medium ${
+                          conv.contact.mode === 'flows'
+                            ? 'bg-emerald-950 text-emerald-300 border border-emerald-800'
+                            : conv.contact.mode === 'ai'
+                            ? 'bg-purple-950 text-purple-300 border border-purple-800'
+                            : 'bg-slate-800 text-slate-400'
+                        }`}>
+                          {conv.contact.mode.toUpperCase()}
                         </span>
                       )}
                       {conv.contact?.tags?.slice(0, 2).map((t) => (
@@ -285,19 +280,19 @@ export const ConversationsView: React.FC<ConversationsViewProps> = ({
 
               {/* Chat Actions */}
               <div className="flex items-center gap-2 shrink-0">
-                {/* Toggle Auto Reply for Contact */}
-                <button
-                  id="btn-toggle-contact-autoreply"
-                  onClick={handleToggleAutoReply}
-                  title="Permitir ou desativar resposta automática para este contato"
-                  className={`px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-colors ${
-                    contact.auto_reply_disabled
-                      ? 'bg-amber-950 text-amber-300 border-amber-800 hover:bg-amber-900'
-                      : 'bg-slate-900 text-slate-300 border-slate-700 hover:bg-slate-800'
+                {/* Contact Mode Badge */}
+                <span
+                  title="Modo de operação deste contato"
+                  className={`px-3 py-1.5 rounded-lg border text-xs font-mono font-medium ${
+                    contact.mode === 'flows'
+                      ? 'bg-emerald-950 text-emerald-300 border-emerald-800'
+                      : contact.mode === 'ai'
+                      ? 'bg-purple-950 text-purple-300 border-purple-800'
+                      : 'bg-slate-900 text-slate-300 border-slate-700'
                   }`}
                 >
-                  {contact.auto_reply_disabled ? 'Auto-Resposta: OFF' : 'Auto-Resposta: ON'}
-                </button>
+                  {contact.mode === 'flows' ? '⚡ MODO: FLUXOS' : contact.mode === 'ai' ? '✨ MODO: IA' : '🖐 MODO: MANUAL'}
+                </span>
 
                 {/* Toggle Block Contact */}
                 <button

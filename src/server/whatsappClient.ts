@@ -488,9 +488,7 @@ class WhatsAppManager {
       phone: phoneToUse,
       type: 'individual',
       blocked: false,
-      auto_reply_disabled: false,
-      automation_enabled: true,
-      mode: 'manual',
+      mode: 'flows',
       allow_ai: false,
       is_my_contact: false,
       has_conversation: true,
@@ -656,7 +654,7 @@ class WhatsAppManager {
 
     for (const idOrPhone of contactIdentifiers) {
       try {
-        let contact = db.getContactById(idOrPhone);
+        let contact: Contact | null | undefined = db.getContactById(idOrPhone);
         if (!contact) {
           contact = db.getContactByPhone(idOrPhone);
         }
@@ -687,14 +685,7 @@ class WhatsAppManager {
           targetPhone = rawId.startsWith('+') ? rawId : `+${clean}`;
           targetName = targetPhone;
           whatsappChatId = rawId.includes('@') ? rawId : `${clean}@c.us`;
-
-          // Criar contato para manter rastreabilidade
-          contact = db.saveContact({
-            name: targetName,
-            phone: targetPhone,
-            whatsapp_id: whatsappChatId,
-            mode: 'manual',
-          });
+          contact = null; // NÃO transformar número digitado manualmente em contato da agenda!
         }
 
         // Tentar resolver o número real e LID via WhatsApp Web
@@ -755,8 +746,14 @@ class WhatsAppManager {
         const waMsgId = sent?.id?._serialized || `msg_${Date.now()}`;
         console.log(`[WhatsApp-Web.js] Mensagem enviada com sucesso para ${whatsappChatId}. ID:`, waMsgId);
 
-        // 1. Salvar na conversa
-        const conversation = db.findOrCreateConversation(contact.id);
+        // 1. Salvar na conversa (mantém a conversa sem forçar criação de contato)
+        const conversation = db.findOrCreateConversation({
+          whatsapp_conversation_id: whatsappChatId,
+          name: targetName,
+          phone: targetPhone,
+          contact_id: contact?.id,
+          is_group: false,
+        });
         db.addMessage({
           conversation_id: conversation.id,
           sender: 'user',
@@ -768,7 +765,7 @@ class WhatsAppManager {
 
         // 2. Registrar no histórico com campos obrigatórios
         db.addHistory({
-          contact_id: contact.id,
+          contact_id: contact?.id,
           contact_name: targetName,
           contact_phone: targetPhone,
           message: cleanText,
@@ -782,7 +779,7 @@ class WhatsAppManager {
         db.addLog({
           action: 'Envio manual de mensagem',
           result: 'replied_manual',
-          contact_id: contact.id,
+          contact_id: contact?.id,
           contact_name: targetName,
           contact_phone: targetPhone,
           outgoing_message: cleanText,
@@ -794,7 +791,8 @@ class WhatsAppManager {
 
         if (this.io) {
           this.io.emit('whatsapp:message_sent', {
-            contact_id: contact.id,
+            contact_id: contact?.id,
+            conversation_id: conversation.id,
             content: cleanText,
             mode: 'manual',
           });
@@ -1003,8 +1001,7 @@ class WhatsAppManager {
             is_my_contact: true,
             has_conversation: true,
             possui_conversa: true,
-            mode: 'manual',
-            automation_enabled: true,
+            mode: 'flows',
             allow_ai: false,
           });
 
